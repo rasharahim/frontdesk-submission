@@ -1,6 +1,6 @@
 # Frontdesk
 
-Frontdesk is a customer support ticket management system. Phase 3 adds PostgreSQL-backed login, authorization, ticket creation, queue and detail APIs, and audited public replies and internal notes. The React app remains a development status page. SLA calculations, lifecycle transitions, claiming and full agent/customer screens are planned for later phases.
+Frontdesk is a customer support ticket management system. Phase 4 adds business-hours deadlines, persisted initial SLA clocks, first-response completion and staff SLA views. Authentication and audited ticket APIs remain available. The React app remains a development status page. Full lifecycle transitions, claiming and the dashboard are planned for later phases.
 
 ## Prerequisites
 
@@ -57,10 +57,11 @@ npm run db:generate
 npm run db:migrate
 npm run db:migrate:test
 npm run db:seed
+npm run db:sla:backfill
 npm run dev
 ```
 
-The migration commands use Prisma Migrate deploy to apply checked-in SQL to the dedicated local database using its owner role. They do not need a shadow database, CREATE DATABASE privilege or a reset. The seed is development-only and idempotent. It defines two agents, two customers, four tickets, public and private messages, and one sample holiday. Existing demo accounts retain their original hashes on reruns. SLA rows, waiting deadlines and audit fixtures are postponed until their business operations exist.
+The migration commands use Prisma Migrate deploy to apply checked-in SQL to the dedicated local database using its owner role. They do not need a shadow database, CREATE DATABASE privilege or a reset. The seed is development-only and idempotent. It defines two agents, two customers, four tickets, public and private messages, and one sample holiday. Existing demo accounts retain their original hashes on reruns. Run the restricted development backfill after seeding to initialize reconstructable legacy clocks. It reports initialized tickets and clocks and unresolved cases. It keeps stored fixture timestamps and existing clocks intact. Historical resolution clocks remain unavailable when the activity record lacks reliable timing evidence.
 
 Open **http://127.0.0.1:5173**. The landing page checks relative health and readiness routes through the Vite proxy. Direct backend endpoints are **http://127.0.0.1:3000/api/health** and **http://127.0.0.1:3000/api/ready**. Health is independent of PostgreSQL. Readiness returns 503 and a safe JSON error if its database check fails.
 
@@ -73,7 +74,7 @@ npm test
 npm run test:db
 ```
 
-Use the two `dev:*` commands separately if you prefer separate terminals. `npm test` runs HTTP/configuration tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
+Use the two `dev:*` commands separately if you prefer separate terminals. `npm test` runs HTTP/configuration and deterministic SLA tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
 
 ## Try the APIs locally
 
@@ -92,7 +93,7 @@ await fetch('/api/tickets').then((r) => r.json())
 await fetch('/api/auth/logout', { method: 'POST' }).then((r) => ({ status: r.status }))
 ```
 
-For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies or private notes. Customer replies currently require an open ticket. Ticket creation does not initialize SLA clocks in Phase 3. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
+For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies or private notes. Customer replies currently require an open ticket. New tickets receive response and resolution clocks on the published calendar. Staff can inspect `sla` and filter with `sla=overdue` or `sla=historical`. A null individual clock means historical evidence was insufficient. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
 
 Sessions use a host-only, HttpOnly, SameSite=Lax cookie with Secure in production. Writes require an allowed Origin or a same-origin Referer fallback. The process-local login limiter resets when the server restarts, is not shared across instances, and can temporarily throttle legitimate traffic sharing an IP or account. Session expiry and logout invalidate use immediately. Phase 3 retains expired and revoked rows.
 

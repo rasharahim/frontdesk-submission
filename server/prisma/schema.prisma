@@ -45,6 +45,11 @@ enum ClockState {
   CANCELED
 }
 
+enum SlaDeadlineField {
+  RUNNING_DUE_AT
+  COMPLETED_DUE_AT
+}
+
 enum AuditActor {
   USER
   SYSTEM
@@ -176,10 +181,24 @@ model SlaClock {
   dueAt            DateTime?  @db.Timestamptz(3)
   endedAt          DateTime?  @db.Timestamptz(3)
   firstBreachedAt  DateTime?  @db.Timestamptz(3)
+  completedDueAt   DateTime?  @db.Timestamptz(3)
+  completionOnTime Boolean?
+  deadlineCorrection SlaDeadlineCorrection?
 
   @@unique([ticketId, kind, cycle])
   @@index([state, dueAt])
   @@index([ticketId, firstBreachedAt])
+}
+
+model SlaDeadlineCorrection {
+  clockId           String           @id @db.Uuid
+  clock             SlaClock         @relation(fields: [clockId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  field             SlaDeadlineField
+  originalDeadline  DateTime         @db.Timestamptz(3)
+  correctedDeadline DateTime         @db.Timestamptz(3)
+  reason            String
+  correctedAt       DateTime         @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
+  correctedBy       String           @default(dbgenerated("CURRENT_USER"))
 }
 
 model AuditEvent {

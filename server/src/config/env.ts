@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { BUSINESS_TIMEZONE } from '../sla/calendar.js'
 
 export function loadLocalEnv(name: '.env' | '.env.test' | '.env.migrate' = '.env') {
   const path = fileURLToPath(new URL('../../../' + name, import.meta.url))
@@ -23,14 +24,7 @@ const environment = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   DATABASE_URL: databaseUrl,
-  BUSINESS_TIMEZONE: z.string().default('Asia/Kolkata').refine((value) => {
-    try {
-      new Intl.DateTimeFormat('en', { timeZone: value })
-      return true
-    } catch {
-      return false
-    }
-  }),
+  BUSINESS_TIMEZONE: z.literal(BUSINESS_TIMEZONE).default(BUSINESS_TIMEZONE),
   SESSION_COOKIE_NAME: z.string().regex(/^[a-zA-Z0-9_-]+$/).default('frontdesk_session'),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24).default(8),
   APP_ORIGIN: z.url().refine((value) => {

@@ -1,4 +1,4 @@
-# SLA rules proposed for review
+# Approved SLA rules
 
 | Priority | First public response | Resolution |
 |---|---:|---|
@@ -25,6 +25,22 @@ For any priority change keep each unfinished clock's accrued active milliseconds
 ## Closure and reopening
 
 Inactivity closes a continuous Waiting period after 2,700 working minutes. At the exact cutoff closure wins. Auto-close stops the paused resolution as CANCELED, retaining any existing breach, and records effective closure and actual processing time. Auto-closed tickets require a new ticket. For resolved tickets, permit the owner to reopen before resolvedAt + 168 hours. Exact expiry rejects. The customer can create a new ticket from the expired screen with a fresh SLA and optional source link to their own terminal ticket. Reopening keeps the assignee and original first-response result and starts a fresh resolution cycle using current priority and the ticket calendar. Earlier resolution outcomes and breach timestamps are retained without overwriting them.
+
+## Phase 4 representation and enforcement
+
+The engine converts dates explicitly with the IANA Asia/Kolkata timezone. PostgreSQL DATE holiday values are converted to their ISO date portion. A zero-length addition normalizes to the effective working start. Negative, fractional-millisecond or excessive durations, reversed intervals and invalid dates throw. The supported local year range is 1970 through 9999 with a 36,600-day bound on scans. All persisted durations use integer milliseconds. Completed and canceled clocks report no remaining obligation.
+
+The ticket transaction initializes both clocks with the same creation instant. First-response completion uses the server timestamp captured after acquiring the ticket lock. One qualifying transaction records completion. Subsequent replies leave it unchanged. The existing reply audit carries the completion status and final deadline, and a separate system SLA_BREACHED event records a newly discovered breach at the missed deadline. Both commit with the reply. Read-only staff views can show a live overdue clock before a durable breach is recorded. In Phase 4 the first-response write persists it. Scheduled reconciliation is reserved for Phase 5.
+
+Terminal rows retain the final deadline and an on-time completion flag separately from the first breach. For example, a budget increase can allow a completion to meet its final deadline while the earlier breach remains in history. An overdue clock can show zero overdue working milliseconds outside the working interval immediately after expiry.
+
+The development backfill locks and processes existing tickets in bounded batches. It reconstructs eligible first replies from stored public agent messages and starts uninterrupted Open clocks using the stored creation time and calendar. It leaves unavailable clocks when lifecycle or priority history does not establish their timing and does not create retrospective audit events. Phase 5 will connect the pure pause, resume, priority and resolution-cycle operations to transactional lifecycle changes.
+
+## UTC repair and legacy gaps
+
+The first development backfill ran on a non-UTC PostgreSQL session. The adapter sent unqualified UTC values and read the session-local wall time as UTC, masking a storage shift. Database connections now use UTC explicitly. The repair used independent stored ticket and reply timestamps and the saved calendar version to reconstruct deadlines. It found no changed completion flags, breach instants, elapsed times, or companion timestamps. Four running deadlines were corrected atomically alongside their append-only evidence. The two completed deadlines are read through an owner-written correction linked to their immutable clock rows. Their underlying rows and completion outcomes stay intact.
+
+The legacy Waiting and Resolved tickets have verified first-response evidence but insufficient continuous resolution timing. Their resolution clock is null. Phase 5 should reject a timing-dependent resume until reliable elapsed history is available or an operator-approved policy is defined. If a stored resolved instant establishes reopening eligibility, Phase 5 can start a fresh resolution clock while preserving the earlier history gap. It should avoid assigning an outcome to an unavailable prior clock.
 
 ## Worked examples
 

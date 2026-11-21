@@ -24,6 +24,12 @@ async function seed() {
   const passwordHash = await bcrypt.hash(password, 12)
   const db = createDatabase(url)
   try {
+    const [identity] = await db.$queryRaw<{ db: string; role: string; timezone: string }[]>`
+      SELECT current_database() AS db, current_user AS role, current_setting('TimeZone') AS timezone
+    `
+    if (identity?.db !== 'frontdesk_dev' || identity.role !== 'frontdesk_dev_owner' || identity.timezone !== 'UTC') {
+      throw new Error('Unexpected seed database identity or timezone.')
+    }
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM pg_advisory_xact_lock(2472002)`
       const accounts = await Promise.all(users.map((user) => tx.user.upsert({
@@ -49,7 +55,7 @@ async function seed() {
       }
 
       const [anika, dev, leena, omar] = accounts
-      const createdAt = new Date(Date.now() - 86_400_000)
+      const createdAt = new Date('2026-11-20T04:00:00.000Z')
       const yesterdayReply = new Date(createdAt.getTime() + 3_600_000)
       const fixtures = [
         { customerId: leena.id, priority: 'URGENT', subject: 'Export blocks closing reports', description: 'Export stops before it saves a file.', status: 'OPEN' },

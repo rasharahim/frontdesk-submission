@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
 import { isLocalDatabase, loadLocalEnv } from '../src/config/env.js'
 import { createDatabase } from '../src/lib/db.js'
+import { backfillClocks } from '../src/sla/persistence.js'
 import type { PrismaClient, UserRole } from '../src/generated/prisma/client.js'
 
 const origin = 'https://frontdesk.example.test'
@@ -201,7 +202,8 @@ describe('ticket API and privacy', () => {
       status: 'OPEN', reference: expect.stringMatching(/^FD-\d+$/), messages: [] })
     const ticket = await runtime.ticket.findUniqueOrThrow({ where: { id: result.body.id } })
     expect(ticket).toMatchObject({ customerId: customer.id, assigneeId: null, calendarId, createdAt: expect.any(Date) })
-    expect(await runtime.slaClock.count({ where: { ticketId: ticket.id } })).toBe(0)
+    expect(await runtime.slaClock.count({ where: { ticketId: ticket.id } })).toBe(2)
+    expect(result.body).not.toHaveProperty('sla')
     const events = await runtime.auditEvent.findMany({ where: { ticketId: ticket.id } })
     expect(events).toEqual([expect.objectContaining({ action: 'CREATED', actorId: customer.id, actorKind: 'USER',
       effectiveAt: ticket.createdAt, newStatus: 'OPEN', details: {} })])
@@ -247,13 +249,13 @@ describe('ticket API and privacy', () => {
   it('supports agent scope, assignment, status, priority, counts and validated query bounds', async () => {
     const result = await get('?status=WAITING&priority=LOW&assigneeId=' + agent.id + '&q=' + run, agentCookie).expect(200)
     expect(result.body.items.map((item: { id: string }) => item.id)).toEqual([waiting])
-    expect(result.body.counts).toEqual({ open: 1, waiting: 1, overdue: null })
-    expect(result.body.items[0]).toMatchObject({ assignee: { id: agent.id }, sla: null, waitingSince: expect.any(String) })
+    expect(result.body.counts).toEqual({ open: 1, waiting: 1, overdue: 0 })
+    expect(result.body.items[0]).toMatchObject({ assignee: { id: agent.id }, sla: { resolution: null, historicalBreach: false }, waitingSince: expect.any(String) })
     expect((await get('?scope=unassigned&q=' + foreign, agentCookie).expect(200)).body.items[0].id).toBe(foreign)
     await get('/' + foreign, agentCookie).expect(200)
     await get('?scope=all', customerCookie).expect(403)
     await get('?assigneeId=' + agent.id, customerCookie).expect(403)
-    await get('?scope=all&sla=overdue', agentCookie).expect(409)
+    await get('?scope=all&sla=overdue', agentCookie).expect(200)
     for (const query of ['?page=0', '?limit=51', '?page=1&page=2', '?unknown=yes', '/not-a-uuid']) {
       await get(query, agentCookie).expect(400)
     }
@@ -314,7 +316,7 @@ describe('ticket API and privacy', () => {
   it('rolls back ticket and message mutations when the audit insert fails', async () => {
     const subject = 'Rollback fixture ' + run
     const rollbackTicket = await owner.ticket.create({ data: { subject, description: 'Fixture',
-      calendarId, customerId: customer.id, priority: 'LOW' } })
+      calendarId, customerId: customer.id, assigneeId: agent.id, priority: 'LOW' } })
     // The test owner adds an insert rejection only. Runtime grants and all protection triggers stay intact.
     await owner.$executeRaw`CREATE FUNCTION phase3_reject_audit() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
@@ -329,6 +331,8 @@ describe('ticket API and privacy', () => {
       const failure = await create(customerCookie, { subject }).expect(500)
       expect(failure.body).toEqual({ error: { code: 'INTERNAL_ERROR', message: 'Unexpected server error.' } })
       await message(rollbackTicket.id, 'customer-replies', customerCookie).expect(500)
+      await message(rollbackTicket.id, 'public-replies', agentCookie).expect(500)
+      expect(await runtime.slaClock.count({ where: { ticketId: rollbackTicket.id } })).toBe(0)
       expect(await runtime.ticket.count({ where: { subject } })).toBe(1)
       expect(await runtime.ticketMessage.count({ where: { ticketId: rollbackTicket.id } })).toBe(0)
       expect(await runtime.auditEvent.count({ where: { ticketId: rollbackTicket.id } })).toBe(0)
@@ -337,5 +341,155 @@ describe('ticket API and privacy', () => {
       await owner.$executeRaw`DROP TRIGGER IF EXISTS "phase3_reject_audit" ON "AuditEvent"`
       await owner.$executeRaw`DROP FUNCTION phase3_reject_audit()`
     }
+  })
+})
+
+// Fixed instants at the application boundary keep connection and locking behavior real.
+describe('persisted SLA', () => {
+  const initial = '2026-11-23T04:00:00.000Z'
+  async function timedFixture(start = initial) {
+    let now = new Date(start)
+    const target = application(() => now)
+    const ownerCookie = cookieOf(await login(target, customer.email).expect(200))
+    const staffCookie = cookieOf(await login(target, agent.email).expect(200))
+    const subject = 'SLA ' + randomUUID()
+    const createTicket = () => request(target).post('/api/tickets').set('Origin', origin).set('Cookie', ownerCookie)
+      .send({ subject, body: 'SLA fixture', priority: 'URGENT' })
+    const makeAssigned = async () => {
+      const result = await createTicket().expect(201)
+      await owner.ticket.update({ where: { id: result.body.id }, data: { assigneeId: agent.id } })
+      return result.body.id as string
+    }
+    const send = (id: string, path: string, cookie: string) =>
+      request(target).post('/api/tickets/' + id + '/' + path).set('Origin', origin).set('Cookie', cookie).send({ body: 'SLA fixture reply' })
+    const read = (path: string, cookie = staffCookie) => request(target).get('/api/tickets' + path).set('Cookie', cookie)
+    return { subject, ownerCookie, staffCookie, createTicket, makeAssigned, send, read,
+      setTime: (value: string) => { now = new Date(value) } }
+  }
+
+  it('persists both budgets, deadlines, cycle and calendar at the creation instant', async () => {
+    const fixture = await timedFixture()
+    const id = await fixture.makeAssigned()
+    const ticket = await runtime.ticket.findUniqueOrThrow({ where: { id }, include: { clocks: true } })
+    expect(ticket.calendarId).toBe(calendarId)
+    expect(ticket.clocks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'RESPONSE', cycle: 1, startedAt: new Date(initial), budgetMs: 7_200_000n,
+        originalBudgetMs: 7_200_000n, dueAt: new Date('2026-11-23T06:00:00.000Z') }),
+      expect.objectContaining({ kind: 'RESOLUTION', cycle: 1, startedAt: new Date(initial), budgetMs: 32_400_000n,
+        originalBudgetMs: 32_400_000n, dueAt: new Date('2026-11-23T13:00:00.000Z') }),
+    ]))
+    const stored = await runtime.$queryRaw<{ kind: string; utc: string; timezone: string }[]>`
+      SELECT kind, to_char("dueAt" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS utc,
+        current_setting('TimeZone') AS timezone
+      FROM "SlaClock" WHERE "ticketId" = ${id}::uuid ORDER BY kind
+    `
+    expect(stored).toEqual([
+      { kind: 'RESPONSE', utc: '2026-11-23T06:00:00.000Z', timezone: 'UTC' },
+      { kind: 'RESOLUTION', utc: '2026-11-23T13:00:00.000Z', timezone: 'UTC' },
+    ])
+    expect((await fixture.read('/' + id, fixture.ownerCookie).expect(200)).body).not.toHaveProperty('sla')
+  })
+
+  it('rolls back a just-created ticket when clock initialization rejects its instant', async () => {
+    const fixture = await timedFixture('1969-01-02T10:00:00.000Z')
+    await fixture.createTicket().expect(500)
+    expect(await runtime.ticket.count({ where: { subject: fixture.subject } })).toBe(0)
+  })
+
+  it('customer, private and unauthorized messages leave both SLA clocks unchanged', async () => {
+    const fixture = await timedFixture()
+    const id = await fixture.makeAssigned()
+    const read = () => runtime.slaClock.findMany({ where: { ticketId: id }, orderBy: { kind: 'asc' } })
+    const before = await read()
+    await fixture.send(id, 'internal-notes', fixture.staffCookie).expect(201)
+    await fixture.send(id, 'customer-replies', fixture.ownerCookie).expect(201)
+    await fixture.send(id, 'public-replies', fixture.ownerCookie).expect(403)
+    expect(await read()).toEqual(before)
+  })
+
+  it('accepts an exact-deadline response once and leaves resolution running', async () => {
+    const fixture = await timedFixture()
+    const id = await fixture.makeAssigned()
+    fixture.setTime('2026-11-23T06:00:00.000Z')
+    const clock = () => runtime.slaClock.findUniqueOrThrow({ where: { ticketId_kind_cycle: { ticketId: id, kind: 'RESPONSE', cycle: 1 } } })
+    await fixture.send(id, 'public-replies', fixture.staffCookie).expect(201)
+    const first = await clock()
+    expect(first).toMatchObject({ state: 'COMPLETED', completionOnTime: true, firstBreachedAt: null,
+      endedAt: new Date('2026-11-23T06:00:00.000Z'), completedDueAt: new Date('2026-11-23T06:00:00.000Z') })
+    fixture.setTime('2026-11-23T06:01:00.000Z')
+    await fixture.send(id, 'public-replies', fixture.staffCookie).expect(201)
+    expect(await clock()).toEqual(first)
+    expect((await fixture.read('/' + id).expect(200)).body.sla).toMatchObject({
+      response: { status: 'COMPLETED_ON_TIME' }, resolution: { status: 'ACTIVE' }, historicalBreach: false,
+    })
+  })
+
+  it('serializes simultaneous late replies and persists exactly one breach and completion', async () => {
+    const fixture = await timedFixture()
+    const id = await fixture.makeAssigned()
+    fixture.setTime('2026-11-23T06:00:00.001Z')
+    await Promise.all(Array.from({ length: 3 }, () => fixture.send(id, 'public-replies', fixture.staffCookie).expect(201)))
+    const events = await runtime.auditEvent.findMany({ where: { ticketId: id }, orderBy: { id: 'asc' } })
+    expect(events.filter((event) => event.action === 'SLA_BREACHED')).toEqual([
+      expect.objectContaining({ actorKind: 'SYSTEM', effectiveAt: new Date('2026-11-23T06:00:00.000Z') }),
+    ])
+    const replies = events.filter((event) => event.action === 'PUBLIC_REPLY')
+    expect(replies).toHaveLength(3)
+    expect(replies[0].details).toMatchObject({ firstResponse: { status: 'COMPLETED_LATE' } })
+    expect(replies[1].details).not.toHaveProperty('firstResponse')
+    expect(replies[2].details).not.toHaveProperty('firstResponse')
+    expect((await fixture.read('/' + id).expect(200)).body.sla).toMatchObject({
+      response: { status: 'COMPLETED_LATE', consumedMs: 7_200_001, firstBreachedAt: '2026-11-23T06:00:00.000Z' },
+      historicalBreach: true,
+    })
+    expect((await fixture.read('?sla=historical&q=' + fixture.subject).expect(200)).body.total).toBe(1)
+  })
+
+  it('filters overdue before pagination, uses a shared evaluation instant and leaves reads side-effect free', async () => {
+    const fixture = await timedFixture()
+    const ids = await Promise.all(Array.from({ length: 3 }, () => fixture.makeAssigned()))
+    fixture.setTime('2026-11-23T06:00:00.000Z')
+    expect((await fixture.read('?sla=overdue&q=' + fixture.subject).expect(200)).body.total).toBe(0)
+    fixture.setTime('2026-11-23T06:00:00.001Z')
+    const query = '?sla=overdue&limit=2&q=' + fixture.subject
+    const first = (await fixture.read(query).expect(200)).body
+    const second = (await fixture.read(query + '&page=2').expect(200)).body
+    expect(first).toMatchObject({ total: 3, counts: { overdue: 3 } })
+    expect(first.items).toHaveLength(2)
+    expect(second.items).toHaveLength(1)
+    for (const item of [...first.items, ...second.items]) {
+      expect(ids).toContain(item.id)
+      expect(item.sla).toMatchObject({ asOf: '2026-11-23T06:00:00.001Z', response: { status: 'OVERDUE', overdueWorkingMs: 1 } })
+    }
+    expect(await runtime.slaClock.count({ where: { ticketId: { in: ids }, firstBreachedAt: { not: null } } })).toBe(0)
+  })
+
+  it('keeps existing deadlines when another holiday calendar version is published', async () => {
+    const latest = await owner.holidayCalendar.findFirstOrThrow({ orderBy: { version: 'desc' } })
+    const day = new Date(Date.UTC(2040, 0, 2 + 7 * latest.version, 4))
+    const fixture = await timedFixture(day.toISOString())
+    const old = await fixture.makeAssigned()
+    const prior = (await fixture.read('/' + old).expect(200)).body.sla
+    await owner.$transaction(async (tx) => {
+      const newer = await tx.holidayCalendar.create({ data: { version: latest.version + 1,
+        holidays: { create: { date: new Date(day.toISOString().slice(0, 10)), label: 'SLA calendar version fixture' } } } })
+      await tx.holidayCalendar.update({ where: { id: newer.id }, data: { publishedAt: new Date() } })
+    })
+    const current = await fixture.makeAssigned()
+    expect((await fixture.read('/' + old).expect(200)).body.sla).toEqual(prior)
+    const fresh = (await fixture.read('/' + current).expect(200)).body.sla
+    expect(fresh.calendarVersion).toBe(latest.version + 1)
+    expect(fresh.response.deadline > prior.response.deadline).toBe(true)
+  })
+
+  it('backfills factual replies and preserves initialized clocks on rerun', async () => {
+    const before = await runtime.slaClock.findMany({ where: { ticketId: assigned }, orderBy: { kind: 'asc' } })
+    expect(before).toHaveLength(2)
+    const first = await backfillClocks(runtime)
+    expect(first.unresolvedTickets).toBeGreaterThan(0)
+    const second = await backfillClocks(runtime)
+    expect(second).toEqual({ initializedTickets: 0, initializedClocks: 0, unresolvedTickets: first.unresolvedTickets })
+    expect(await runtime.slaClock.findMany({ where: { ticketId: assigned }, orderBy: { kind: 'asc' } })).toEqual(before)
+    expect(await runtime.slaClock.count({ where: { ticketId: waiting } })).toBe(0)
   })
 })

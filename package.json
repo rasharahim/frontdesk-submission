@@ -23,7 +23,9 @@
     "db:generate": "node server/scripts/prisma.mjs generate",
     "db:migrate": "node server/scripts/prisma.mjs migrate-dev",
     "db:migrate:test": "node server/scripts/prisma.mjs migrate-test",
-    "db:seed": "npm run seed -w server"
+    "db:seed": "npm run seed -w server",
+    "db:sla:backfill": "npm run sla:backfill -w server",
+    "db:sla:repair": "npm run sla:repair -w server --"
   },
   "devDependencies": {
     "concurrently": "10.0.7",

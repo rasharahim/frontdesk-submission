@@ -11,6 +11,8 @@
   "include": [
     "src",
     "prisma/seed.ts",
+    "prisma/backfill-sla.ts",
+    "prisma/repair-sla.ts",
     "prisma.config.ts",
     "test"
   ]

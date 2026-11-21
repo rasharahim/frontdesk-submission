@@ -23,6 +23,7 @@ if (mode === 'validate' || mode === 'generate') {
         !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
         url.pathname !== '/' + database || url.username !== database + '_owner' ||
         !url.password || url.search || url.hash) throw new Error()
+    url.searchParams.set('options', '-c timezone=UTC')
     env.DATABASE_URL = url.href
   } catch {
     console.error(key + ' must point to the local ' + database + ' database using its owner role and password.')
