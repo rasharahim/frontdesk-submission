@@ -1,0 +1,92 @@
+# Frontdesk
+
+Frontdesk is a customer support ticket management system. Phase 2 provides the React development status page, Express health and readiness routes, and the PostgreSQL schema, migrations, role separation and synthetic seed. Application login, ticket services, SLA calculations and the agent/customer workflows are planned for later phases.
+
+## Prerequisites
+
+Use free Node.js 22.12+ within the 22.x LTS line or Node.js 24 LTS, npm 10+, Git, and local PostgreSQL 17. The project uses React, Vite, TypeScript, Tailwind and Lucide React on the client. The server uses Express, Zod, Helmet, Prisma and bcrypt. Vitest and Supertest cover the HTTP and database foundation. No Docker, paid services or external accounts are needed.
+
+Run the following from the repository root in Windows CMD. If your PostgreSQL installation uses a different location, use its actual psql and pg_isready paths.
+
+```cmd
+node --version
+npm --version
+git --version
+"C:\Program Files\PostgreSQL\17\bin\pg_isready.exe" -h localhost -p 5432
+npm ci
+```
+
+Official installers are available from [Node.js](https://nodejs.org/en/download), [Git](https://git-scm.com/install/windows) and [PostgreSQL](https://www.postgresql.org/download/windows/).
+
+## Local database roles
+
+Run the bootstrap once. It stops if any of the named databases or roles already exist. Enter the local PostgreSQL administrator password at the first prompt. Choose four separate passwords when psql prompts for the owner and runtime roles. Keep passwords in your password manager or another secure local store.
+
+```cmd
+"C:\Program Files\PostgreSQL\17\bin\psql.exe" -X -h localhost -p 5432 -U postgres -d postgres -W -f server\scripts\bootstrap-local.sql
+```
+
+PowerShell users should prefix the same quoted executable with the call operator `&`. The administrator role provisions databases and roles only. The application runs as `frontdesk_dev_runtime`, and database tests run as `frontdesk_test_runtime` with a separate test owner connection for setup and trigger tests. The owner roles run migrations. Both runtime roles inherit table grants from the NOLOGIN `frontdesk_runtime_access` group and can connect only to their own Frontdesk database among the two provisioned targets.
+
+## Private environment files
+
+Copy the examples once and edit the resulting ignored files locally. Keep owner URLs out of `.env`. Never place the PostgreSQL administrator login in these files.
+
+```cmd
+copy .env.example .env
+copy .env.migrate.example .env.migrate
+copy .env.test.example .env.test
+```
+
+For each URL use the form `postgresql://ROLE:ENCODED_PASSWORD@localhost:5432/DATABASE`. Substitute the role and database below. Percent-encode the password component, including characters such as `@` → `%40`, `:` → `%3A`, `#` → `%23`, `%` → `%25` and spaces → `%20`. Keep this work local and avoid putting the password in command history or an online encoder. Quote the complete URL in each environment file if needed.
+
+| File | Variable | Role | Database |
+|---|---|---|---|
+| `.env` | `DATABASE_URL` | `frontdesk_dev_runtime` | `frontdesk_dev` |
+| `.env.migrate` | `MIGRATION_DATABASE_URL` | `frontdesk_dev_owner` | `frontdesk_dev` |
+| `.env.migrate` | `TEST_MIGRATION_DATABASE_URL` | `frontdesk_test_owner` | `frontdesk_test` |
+| `.env.test` | `TEST_DATABASE_URL` | `frontdesk_test_runtime` | `frontdesk_test` |
+
+Set `DEV_SEED_PASSWORD` in `.env.migrate` to a separate 12–72 UTF-8 byte password for synthetic application accounts. The server loads only `.env` locally. `NODE_ENV` defaults to development, `PORT` to 3000, and `BUSINESS_TIMEZONE` to Asia/Kolkata. `SESSION_COOKIE_NAME` and `SESSION_TTL_HOURS` reserve defaults for Phase 3. Keep `TRUST_PROXY=false` for direct local requests. Enable it only behind a trusted single reverse proxy.
+
+## Generate, migrate, seed, and run
+
+```cmd
+npm run db:validate
+npm run db:generate
+npm run db:migrate
+npm run db:migrate:test
+npm run db:seed
+npm run dev
+```
+
+The migration commands use Prisma Migrate deploy to apply checked-in SQL to the dedicated local database using its owner role. They do not need a shadow database, CREATE DATABASE privilege or a reset. The seed is development-only and idempotent. It defines two agents, two customers, four tickets, public and private messages, and one sample holiday. Existing demo accounts retain their original hashes on reruns. SLA rows, waiting deadlines and audit fixtures are postponed until their business operations exist.
+
+Open **http://127.0.0.1:5173**. The landing page checks relative health and readiness routes through the Vite proxy. Direct backend endpoints are **http://127.0.0.1:3000/api/health** and **http://127.0.0.1:3000/api/ready**. Health is independent of PostgreSQL. Readiness returns 503 and a safe JSON error if its database check fails.
+
+```cmd
+npm run dev:client
+npm run dev:server
+npm run typecheck
+npm run build
+npm test
+npm run test:db
+```
+
+Use the two `dev:*` commands separately if you prefer separate terminals. `npm test` runs HTTP/configuration tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
+
+## Database integrity
+
+Ticket references use a PostgreSQL sequence. Restrictive foreign keys retain history. Partial indexes support unassigned claims, public message history and unique active SLA clocks. A ticket points to a shared published holiday calendar version. Publish a new version for future tickets when holiday dates change. Existing tickets keep their calendar across reopening. Terminal SLA cycles, first breach timestamps and consumed time are protected against rewrites.
+
+Audit rows accept inserts and reads through the runtime role. PostgreSQL permissions prohibit audit edits, deletes, truncation and DDL, and triggers reject update, delete and truncate statements even with ordinary DML permission. The migration owner, privileged DBAs and hosting administrators can alter these protections. The runtime role can append audit rows, so services must create truthful events in the same transaction as the corresponding ticket changes.
+
+## Troubleshooting
+
+- **Configuration error at startup:** Copy `.env.example` to `.env` and set the restricted development runtime URL.
+- **Readiness returns 503:** Check `pg_isready`, then verify the runtime role and password with psql using `-W`, and confirm the URL is percent-encoded.
+- **Database bootstrap preflight fails:** Check which Frontdesk roles or databases already exist. Preserve existing data and ask a local PostgreSQL administrator to finish the setup if it was interrupted. Avoid rerunning against another database.
+- **Migration access denied:** Verify the owner URL and the bootstrap grants. Keep migrations separate from the runtime role.
+- **Development port conflict:** Close the other process using 5173 or choose another backend `PORT` in `.env` for a 3000 conflict. The frontend proxy reads that backend setting.
+
+Hosting and free-tier eligibility are reserved for Phase 9.

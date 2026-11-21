@@ -4,10 +4,12 @@ Prefix every route with /api. Requests and responses are JSON except empty 204. 
 
 | Method and route | Actor | Request and validation | Success response | Business rule and transaction |
 |---|---|---|---|---|
+| GET /health | Anyone | None | 200 { status: ok, service: frontdesk } | Process check, no database access |
+| GET /ready | Anyone | None | 200 { status: ready } | Execute a lightweight DB query, return sanitized 503 on failure |
 | POST /auth/login | Anonymous | email, password, valid email, 1–72 password bytes | 200 User + session cookie | Verify bcrypt, generic 401, insert session |
 | GET /auth/me | Signed in | None | 200 User | Read verified session and active account |
 | POST /auth/logout | Signed in | None | 204, clear cookie | Delete current session |
-| POST /tickets | Customer | subject 1–160, body 1–4,000, priority enum, optional sourceTicketId | 201 TicketDetail | Owner derived from session, source must be owned and terminal. Create ticket, initial message, clocks and audit together |
+| POST /tickets | Customer | subject 1–160, body 1–4,000, priority enum, optional sourceTicketId | 201 TicketDetail | Owner derived from session, source must be owned and terminal. Create ticket, description, clocks and audit together |
 | GET /tickets | Signed in | status, priority, q max 160, page 1–1,000, limit 1–50. Agent-only scope mine/unassigned/all and sla overdue/historical | 200 { items: TicketSummary[], page, limit, total, counts? } | Scope first, search subject/exact UUID, stable createdAt/id order. Bounded catch-up before read. Agent counts over selected scope/search/priority before status/SLA filters |
 | GET /tickets/:id | Signed in | UUID | 200 TicketDetail | Scope by owner or staff, reconcile ticket and use consistent authorized reads |
 | POST /tickets/:id/claim | Agent | Empty | 200 TicketSummary | Conditional update and audit. 409 if already assigned or not Open |

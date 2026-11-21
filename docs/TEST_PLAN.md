@@ -1,6 +1,6 @@
 # Test plan
 
-Use Vitest for pure functions, Supertest against Express, and isolated real PostgreSQL with migration and runtime connections. Inject one deterministic clock and explicit calendars. Use independent connections and a barrier for races. Fail the suite on missing integration DB configuration when running integration tests. Never run destructive setup against production. Planned only.
+Use Vitest for pure functions, Supertest against Express, and isolated real PostgreSQL with migration and runtime connections. Inject one deterministic clock and explicit calendars. Use independent connections and a barrier for races. Fail the suite on missing integration DB configuration when running integration tests. Never run destructive setup against production. Phase 2 foundation suites are available via npm test and npm run test:db. The remaining lifecycle and UI cases below are planned.
 
 | Scope | Cases and expected results |
 |---|---|

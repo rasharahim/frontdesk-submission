@@ -8,6 +8,10 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.*.example
+
+# Generated Prisma Client
+/server/src/generated/prisma/
 
 # Build outputs
 dist/
@@ -16,3 +20,18 @@ coverage/
 
 # Logs
 *.log
+# Local tools and transient files
+.nav-page-*
+.nav-render-*
+*.tsbuildinfo
+.tmp/
+tmp/
+*.tmp
+*.swp
+*.bak
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.pgpass
+pgpass.conf

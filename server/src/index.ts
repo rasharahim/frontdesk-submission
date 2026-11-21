@@ -1,0 +1,37 @@
+import { fileURLToPath } from 'node:url'
+import { createApp } from './app.js'
+import { loadLocalEnv, parseEnv } from './config/env.js'
+import { createDatabase } from './lib/db.js'
+
+function start() {
+  const production = process.env.NODE_ENV === 'production'
+  if (!production) loadLocalEnv()
+  const config = parseEnv(process.env)
+  const db = createDatabase(config.DATABASE_URL)
+  const app = createApp({
+    checkDatabase: () => db.$queryRaw`SELECT 1`,
+    logRequests: config.NODE_ENV === 'development',
+    trustProxy: config.TRUST_PROXY,
+    staticDir: config.NODE_ENV === 'production'
+      ? fileURLToPath(new URL('../../client/dist', import.meta.url))
+      : undefined,
+  })
+  const host = config.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'
+  const server = app.listen(config.PORT, host, () => console.info('Frontdesk listening on ' + host + ':' + config.PORT))
+  server.on('error', (error: NodeJS.ErrnoException) => {
+    console.error('Server could not listen (' + (error.code ?? 'unknown') + ').')
+    process.exitCode = 1
+  })
+  const stop = () => server.close(() => { void db.$disconnect() })
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+}
+
+try {
+  start()
+} catch (error) {
+  console.error(error instanceof Error && error.message.startsWith('Missing or invalid configuration:')
+    ? error.message
+    : 'Frontdesk could not start. Check the local configuration.')
+  process.exitCode = 1
+}
