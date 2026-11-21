@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run test/app.test.ts",
-    "test:db": "vitest run test/db.test.ts",
+    "test:db": "vitest run test/db.test.ts test/api.db.test.ts --no-file-parallelism",
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {

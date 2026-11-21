@@ -1,6 +1,6 @@
 # Frontdesk
 
-Frontdesk is a customer support ticket management system. Phase 2 provides the React development status page, Express health and readiness routes, and the PostgreSQL schema, migrations, role separation and synthetic seed. Application login, ticket services, SLA calculations and the agent/customer workflows are planned for later phases.
+Frontdesk is a customer support ticket management system. Phase 3 adds PostgreSQL-backed login, authorization, ticket creation, queue and detail APIs, and audited public replies and internal notes. The React app remains a development status page. SLA calculations, lifecycle transitions, claiming and full agent/customer screens are planned for later phases.
 
 ## Prerequisites
 
@@ -47,7 +47,7 @@ For each URL use the form `postgresql://ROLE:ENCODED_PASSWORD@localhost:5432/DAT
 | `.env.migrate` | `TEST_MIGRATION_DATABASE_URL` | `frontdesk_test_owner` | `frontdesk_test` |
 | `.env.test` | `TEST_DATABASE_URL` | `frontdesk_test_runtime` | `frontdesk_test` |
 
-Set `DEV_SEED_PASSWORD` in `.env.migrate` to a separate 12–72 UTF-8 byte password for synthetic application accounts. The server loads only `.env` locally. `NODE_ENV` defaults to development, `PORT` to 3000, and `BUSINESS_TIMEZONE` to Asia/Kolkata. `SESSION_COOKIE_NAME` and `SESSION_TTL_HOURS` reserve defaults for Phase 3. Keep `TRUST_PROXY=false` for direct local requests. Enable it only behind a trusted single reverse proxy.
+Set `DEV_SEED_PASSWORD` in `.env.migrate` to a separate 12–72 UTF-8 byte password for synthetic application accounts. The server loads only `.env` locally. `NODE_ENV` defaults to development, `PORT` to 3000, and `BUSINESS_TIMEZONE` to Asia/Kolkata. `SESSION_COOKIE_NAME` defaults to `frontdesk_session` and `SESSION_TTL_HOURS` defaults to 8. In production set `APP_ORIGIN` to the exact public HTTPS origin without a trailing slash. In development leave it unset to allow local Vite and backend origins, or set an explicit origin. Keep `TRUST_PROXY=false` for direct local requests. Enable it only behind a trusted single reverse proxy.
 
 ## Generate, migrate, seed, and run
 
@@ -74,6 +74,27 @@ npm run test:db
 ```
 
 Use the two `dev:*` commands separately if you prefer separate terminals. `npm test` runs HTTP/configuration tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
+
+## Try the APIs locally
+
+The synthetic accounts are `anika.agent@example.test`, `dev.agent@example.test`, `leena.customer@example.test`, and `omar.customer@example.test`. Use the configured seed password locally. If it changed after seeding, the existing account hashes are retained.
+
+From the open Vite page at `http://127.0.0.1:5173`, use the browser developer console to try login and requests on the same origin. The prompt supplies the password without placing it in the console command. Do not log the password or inspect or copy the session cookie for testing.
+
+```js
+await fetch('/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ email: 'leena.customer@example.test', password: prompt('Local demo password') }),
+}).then((r) => ({ status: r.status }))
+await fetch('/api/auth/me').then((r) => r.json())
+await fetch('/api/tickets').then((r) => r.json())
+await fetch('/api/auth/logout', { method: 'POST' }).then((r) => ({ status: r.status }))
+```
+
+For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies or private notes. Customer replies currently require an open ticket. Ticket creation does not initialize SLA clocks in Phase 3. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
+
+Sessions use a host-only, HttpOnly, SameSite=Lax cookie with Secure in production. Writes require an allowed Origin or a same-origin Referer fallback. The process-local login limiter resets when the server restarts, is not shared across instances, and can temporarily throttle legitimate traffic sharing an IP or account. Session expiry and logout invalidate use immediately. Phase 3 retains expired and revoked rows.
 
 ## Database integrity
 

@@ -1,6 +1,6 @@
 # Test plan
 
-Use Vitest for pure functions, Supertest against Express, and isolated real PostgreSQL with migration and runtime connections. Inject one deterministic clock and explicit calendars. Use independent connections and a barrier for races. Fail the suite on missing integration DB configuration when running integration tests. Never run destructive setup against production. Phase 2 foundation suites are available via npm test and npm run test:db. The remaining lifecycle and UI cases below are planned.
+Use Vitest for pure functions, Supertest against Express, and isolated real PostgreSQL with migration and runtime connections. Inject one deterministic clock and explicit calendars. Use independent connections and a barrier for races. Fail the suite on missing integration DB configuration when running integration tests. Never run destructive setup against production. Phase 2 foundation suites are available via npm test and npm run test:db. Phase 3 adds real database API tests for identity, sessions, roles, scope, concurrency-safe ticket references, message visibility and transactional audit rollback. The fixture owner connects only to the isolated test DB. Each run uses unique synthetic identities so append-only audit rows are retained. The rollback regression temporarily adds an insert-rejection trigger in the test database and removes it after the check. SLA math and history transitions, claiming races, lifecycle jobs, export privacy, and the full dashboard workflows remain planned.
 
 | Scope | Cases and expected results |
 |---|---|

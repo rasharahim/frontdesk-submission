@@ -51,4 +51,12 @@ describe('application foundation', () => {
     expect(() => parseEnv({})).toThrow('DATABASE_URL')
     expect(() => parseEnv({ DATABASE_URL: validUrl.replace('_runtime', '_owner') })).toThrow('DATABASE_URL')
   })
+  it('requires an exact HTTPS application origin in production', () => {
+    const production = { NODE_ENV: 'production', DATABASE_URL: validUrl }
+    for (const APP_ORIGIN of [undefined, 'http://example.test', 'https://example.test/path', 'https://example.test/']) {
+      expect(() => parseEnv({ ...production, APP_ORIGIN })).toThrow('APP_ORIGIN')
+    }
+    expect(parseEnv({ ...production, APP_ORIGIN: 'https://example.test' }).APP_ORIGIN).toBe('https://example.test')
+  })
+
 })

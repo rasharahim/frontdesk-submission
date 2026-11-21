@@ -33,8 +33,17 @@ const environment = z.object({
   }),
   SESSION_COOKIE_NAME: z.string().regex(/^[a-zA-Z0-9_-]+$/).default('frontdesk_session'),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(24).default(8),
+  APP_ORIGIN: z.url().refine((value) => {
+    try {
+      const url = new URL(value)
+      return ['http:', 'https:'].includes(url.protocol) && url.origin === value
+    } catch { return false }
+  }).optional(),
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
 }).superRefine((values, ctx) => {
+  if (values.NODE_ENV === 'production' && !values.APP_ORIGIN?.startsWith('https://')) {
+    ctx.addIssue({ code: 'custom', path: ['APP_ORIGIN'], message: 'Use the public HTTPS origin.' })
+  }
   if (values.NODE_ENV === 'development' && !isLocalDatabase(values.DATABASE_URL, 'frontdesk_dev', 'runtime')) {
     ctx.addIssue({ code: 'custom', path: ['DATABASE_URL'], message: 'Use the local development runtime role.' })
   }

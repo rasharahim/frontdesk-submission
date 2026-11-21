@@ -9,6 +9,14 @@ function start() {
   const config = parseEnv(process.env)
   const db = createDatabase(config.DATABASE_URL)
   const app = createApp({
+    api: { db, settings: {
+      cookieName: config.SESSION_COOKIE_NAME, ttlHours: config.SESSION_TTL_HOURS,
+      secure: config.NODE_ENV === 'production',
+      origins: config.APP_ORIGIN ? [config.APP_ORIGIN] : [
+        'http://127.0.0.1:5173', 'http://localhost:5173',
+        'http://127.0.0.1:' + config.PORT, 'http://localhost:' + config.PORT,
+      ],
+    } },
     checkDatabase: () => db.$queryRaw`SELECT 1`,
     logRequests: config.NODE_ENV === 'development',
     trustProxy: config.TRUST_PROXY,
