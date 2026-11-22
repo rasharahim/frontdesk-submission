@@ -1,0 +1,219 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  AGENT
+  CUSTOMER
+}
+
+enum Priority {
+  URGENT
+  MEDIUM
+  LOW
+}
+
+enum TicketStatus {
+  OPEN
+  WAITING
+  RESOLVED
+  CLOSED
+}
+
+enum MessageKind {
+  CUSTOMER_PUBLIC
+  AGENT_PUBLIC
+  INTERNAL
+}
+
+enum ClockKind {
+  RESPONSE
+  RESOLUTION
+}
+
+enum ClockState {
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELED
+}
+
+enum SlaDeadlineField {
+  RUNNING_DUE_AT
+  COMPLETED_DUE_AT
+}
+
+enum AuditActor {
+  USER
+  SYSTEM
+}
+
+enum AuditAction {
+  CREATED
+  CLAIMED
+  PUBLIC_REPLY
+  PRIVATE_NOTE
+  WAIT_STARTED
+  CUSTOMER_REPLY
+  WAIT_ENDED
+  RESOLVED
+  AUTO_CLOSED
+  REOPENED
+  PRIORITY_CHANGED
+  SLA_BREACHED
+}
+
+model User {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  displayName  String
+  email        String          @unique
+  passwordHash String
+  role         UserRole
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(3)
+  disabledAt   DateTime?       @db.Timestamptz(3)
+  sessions     Session[]
+  tickets      Ticket[]        @relation("CustomerTickets")
+  assignments  Ticket[]        @relation("AssignedTickets")
+  messages     TicketMessage[]
+  auditEvents  AuditEvent[]
+}
+
+model Session {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tokenHash Bytes     @unique
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime  @db.Timestamptz(3)
+  revokedAt DateTime? @db.Timestamptz(3)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model HolidayCalendar {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version     Int       @unique
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt DateTime? @db.Timestamptz(3)
+  holidays    Holiday[]
+  tickets     Ticket[]
+}
+
+model Holiday {
+  calendarId String          @db.Uuid
+  calendar   HolidayCalendar @relation(fields: [calendarId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  date       DateTime        @db.Date
+  label      String
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@id([calendarId, date])
+}
+
+model Ticket {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reference        String          @unique @default(dbgenerated("('FD-'::text || nextval('ticket_reference_seq'::regclass))"))
+  customerId       String          @db.Uuid
+  customer         User            @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  assigneeId       String?         @db.Uuid
+  assignee         User?           @relation("AssignedTickets", fields: [assigneeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceTicketId   String?         @db.Uuid
+  sourceTicket     Ticket?         @relation("FollowUp", fields: [sourceTicketId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  followUps        Ticket[]        @relation("FollowUp")
+  calendarId       String          @db.Uuid
+  calendar         HolidayCalendar @relation(fields: [calendarId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  subject          String
+  description      String
+  priority         Priority
+  status           TicketStatus    @default(OPEN)
+  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
+  waitingSince     DateTime?       @db.Timestamptz(3)
+  closeDueAt       DateTime?       @db.Timestamptz(3)
+  resolvedAt       DateTime?       @db.Timestamptz(3)
+  closedAt         DateTime?       @db.Timestamptz(3)
+  closeProcessedAt DateTime?       @db.Timestamptz(3)
+  messages         TicketMessage[]
+  clocks           SlaClock[]
+  auditEvents      AuditEvent[]
+
+  @@index([customerId, createdAt, id])
+  @@index([assigneeId, status])
+  @@index([status, priority])
+  @@index([status, closeDueAt])
+  @@index([createdAt, id])
+}
+
+model TicketMessage {
+  id        String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId  String      @db.Uuid
+  ticket    Ticket      @relation(fields: [ticketId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  authorId  String      @db.Uuid
+  author    User        @relation(fields: [authorId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind      MessageKind
+  body      String
+  createdAt DateTime    @default(now()) @db.Timestamptz(3)
+
+  @@index([ticketId, createdAt, id])
+}
+
+model SlaClock {
+  id               String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ticketId         String     @db.Uuid
+  ticket           Ticket     @relation(fields: [ticketId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind             ClockKind
+  cycle            Int
+  state            ClockState
+  originalBudgetMs BigInt
+  budgetMs         BigInt
+  elapsedMs        BigInt     @default(0)
+  startedAt        DateTime   @db.Timestamptz(3)
+  activeSince      DateTime?  @db.Timestamptz(3)
+  pausedAt         DateTime?  @db.Timestamptz(3)
+  dueAt            DateTime?  @db.Timestamptz(3)
+  endedAt          DateTime?  @db.Timestamptz(3)
+  firstBreachedAt  DateTime?  @db.Timestamptz(3)
+  completedDueAt   DateTime?  @db.Timestamptz(3)
+  completionOnTime Boolean?
+  deadlineCorrection SlaDeadlineCorrection?
+
+  @@unique([ticketId, kind, cycle])
+  @@index([state, dueAt])
+  @@index([ticketId, firstBreachedAt])
+}
+
+model SlaDeadlineCorrection {
+  clockId           String           @id @db.Uuid
+  clock             SlaClock         @relation(fields: [clockId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  field             SlaDeadlineField
+  originalDeadline  DateTime         @db.Timestamptz(3)
+  correctedDeadline DateTime         @db.Timestamptz(3)
+  reason            String
+  correctedAt       DateTime         @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
+  correctedBy       String           @default(dbgenerated("CURRENT_USER"))
+}
+
+model AuditEvent {
+  id          BigInt        @id @default(autoincrement())
+  ticketId    String        @db.Uuid
+  ticket      Ticket        @relation(fields: [ticketId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actorId     String?       @db.Uuid
+  actor       User?         @relation(fields: [actorId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actorKind   AuditActor
+  action      AuditAction
+  effectiveAt DateTime      @db.Timestamptz(3)
+  recordedAt  DateTime      @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
+  oldStatus   TicketStatus?
+  newStatus   TicketStatus?
+  details     Json          @default("{}")
+
+  @@index([ticketId, id])
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": ".tmp/maintenance"
+  },
+  "include": ["prisma/seed.ts", "prisma/backfill-sla.ts", "prisma/repair-sla.ts", "prisma/lifecycle-demo.ts"]
+}

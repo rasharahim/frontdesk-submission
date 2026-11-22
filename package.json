@@ -1,0 +1,41 @@
+{
+  "name": "frontdesk",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0",
+    "npm": ">=10"
+  },
+  "scripts": {
+    "dev": "concurrently --kill-others --names server,client \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "npm run dev -w client",
+    "dev:server": "npm run dev -w server",
+    "build": "npm run build -w client && npm run build -w server",
+    "start": "npm run start -w server",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test -w server",
+    "test:client": "npm test -w client",
+    "test:db": "npm run test:db -w server",
+    "db:validate": "node server/scripts/prisma.mjs validate",
+    "db:generate": "node server/scripts/prisma.mjs generate",
+    "db:migrate": "node server/scripts/prisma.mjs migrate-dev",
+    "db:migrate:test": "node server/scripts/prisma.mjs migrate-test",
+    "db:seed": "npm run seed -w server",
+    "db:sla:backfill": "npm run sla:backfill -w server",
+    "db:sla:repair": "npm run sla:repair -w server --",
+    "db:lifecycle:demo": "npm run lifecycle:demo -w server"
+  },
+  "devDependencies": {
+    "concurrently": "10.0.7",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@prisma/config": {
+      "effect": "3.22.5"
+    }
+  }
+}

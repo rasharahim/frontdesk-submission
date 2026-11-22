@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "src",
+    "prisma/seed.ts",
+    "prisma/lifecycle-demo.ts",
+    "prisma/backfill-sla.ts",
+    "prisma/repair-sla.ts",
+    "prisma.config.ts",
+    "test"
+  ]
+}
