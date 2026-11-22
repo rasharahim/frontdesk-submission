@@ -85,7 +85,7 @@ Working time is Monday–Friday, 09:30–18:30 Asia/Kolkata, excluding dates in 
 
 ## Development history
 
-The [development-history branch](https://github.com/rasharahim/frontdesk-submission/tree/development-history) preserves Frontdesk’s original sequence of development milestones, from planning through deployment. The history was sanitized before publication to remove private material.
+The [development-history branch](https://github.com/rasharahim/frontdesk-submission/tree/development-history) documents the project's incremental development, from initial planning and architecture through implementation, testing, and deployment. It preserves the original development milestones and commit chronology.
 
 ## Verified results and limitations
 
