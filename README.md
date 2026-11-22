@@ -83,6 +83,10 @@ React, TypeScript, Vite, Tailwind CSS and Lucide form the frontend. Express, Typ
 
 Working time is Monday–Friday, 09:30–18:30 Asia/Kolkata, excluding dates in the published calendar pinned to each ticket. First-response budgets are 120, 270, and 540 working minutes for Urgent, Medium, and Low. Medium and Low resolution budgets are 1,620 and 2,700 minutes. Urgent resolution is due at the same working-day close if at least 120 working minutes remain at the effective start, otherwise at the next working-day close. Waiting pauses resolution timing, with automatic closure after 2,700 working minutes waiting. Manual resolution can be reopened strictly before 168 elapsed hours. [Detailed rules](docs/SLA_RULES.md)
 
+## Development history
+
+The [development-history branch](https://github.com/rasharahim/frontdesk-submission/tree/development-history) preserves Frontdesk’s original sequence of development milestones, from planning through deployment. The history was sanitized before publication to remove private material.
+
 ## Verified results and limitations
 
 156 automated tests passed with zero failures or skips. The hosted deployment passed one 52-request API acceptance run and one Chrome acceptance run. Concurrent claiming, private note confidentiality, and audit immutability all passed. The local workflow also passed in Chrome and Edge.
