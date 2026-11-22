@@ -18,6 +18,7 @@
     "start": "npm run start -w server",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm test -w server",
+    "test:client": "npm test -w client",
     "test:db": "npm run test:db -w server",
     "db:validate": "node server/scripts/prisma.mjs validate",
     "db:generate": "node server/scripts/prisma.mjs generate",

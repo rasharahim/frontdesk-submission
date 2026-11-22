@@ -29,3 +29,9 @@ Run `npm run db:validate`, `npm run db:generate`, `npm test`, `npm run test:db`,
 | API integration | Wrong content types, body too long, malformed UUID/email, extra fields, invalid enums, impossible pagination, scope denial, 409 handling and safe generic errors |
 | UI manual or focused component tests | Login as each role, search/filter queue, identify overdue vs past breach, claim/conflict refresh, visibility of note composer, wait/customer reply/resolve/reopen, expired action, loading/empty/error, keyboard and narrow viewport |
 | Hosted smoke | Fresh browser login, static deep link, both roles, two-agent claim, configured holiday, cold start, persistence after restart, role grants and available review window |
+
+## Phase 7 frontend verification
+
+- `npm run test:client` covers role navigation, server query construction and customer filter isolation, same-origin session requests, claim conflicts, network errors, escaped messages, paused timing, breach history, and missing timing.
+- `npm run test:browser -w client` uses local Chromium and the isolated PostgreSQL test database. It exercises the rendered login, queue, ticket submission, staff claim and conflict, public and private composers, lifecycle transitions, audit paging, logout and session expiry. The browser test uses restricted runtime credentials for HTTP activity and test owner credentials for synthetic account fixture setup.
+- Inspect the screenshot directory `.tmp/phase7/` locally. Check tab focus, useful status announcements and horizontal overflow at 1440, 1024, 768, 390 and 360 pixels. Phase 8 expands cross-browser, assistive technology and edge-case coverage.

@@ -105,3 +105,11 @@ Closures and missed breaches use separately bounded batches and ticket locks wit
 The state matrix above is enforced in `lifecycle-policy.ts`. Invalid actors fail with 403, foreign customer resources are hidden with 404, and invalid states return 409. Waiting requires an actual public request, and resolving requires a public reply when first response is outstanding. Closed tickets require a fresh ticket. The legacy missing resolution clock remains unavailable. No schema or grants changed in Phase 5.
 
 Phase 9 verifies a single Render Free web service, free subdomain, Render Free PostgreSQL or verified no-card alternative, role support, eligibility, TLS, quotas, expiry, cold start and the full one-week review window. Free-tier availability is pending verification. Keep a local run path using installed PostgreSQL. No paid fallback.
+
+## Phase 7 frontend
+
+The React SPA resolves `/api/auth/me` before mounting protected screens. The authenticated session supplies the role and the application shell is keyed by account. Login uses the HttpOnly session cookie. Logout and protected 401 responses unmount the workspace and clear drafts and read state. Direct and refreshed nested routes work through the existing Express SPA fallback. The server continues to handle authorization and privacy.
+
+Agent routes start at `/agent/tickets`. Customer routes start at `/customer/tickets` and include `/new`. Both use UUID detail routes, browser history and query-string queue filters. The dashboard uses the API totals and role-specific views. Ticket creation and detail screens load from a separate bundle chunk. Conversation bodies render as text.
+
+Reads cancel obsolete requests on navigation or refresh. The queue refreshes every 90 seconds and the open detail view every 60 seconds while visible. Writes are sent once and followed by an authoritative refresh. Separate composer drafts protect against sending a private note as a public reply. Audit pages are loaded on demand with a string cursor. Mobile views use wrapped navigation, a card-style queue, and stacked detail panels. Browser accessibility checks supplement semantic forms, visible focus, status announcements and a skip link.

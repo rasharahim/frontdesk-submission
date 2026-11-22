@@ -1,6 +1,6 @@
 # Frontdesk
 
-Frontdesk is a customer support ticket management system. Phase 5 adds waiting and resumption, manual resolution, reopening, priority changes, and automatic closure with a built-in scheduler. Staff APIs show ticket and SLA state. The React app remains a development status page. Phase 6 adds atomic claiming, private-note acceptance checks, and paginated staff audit history. The full dashboard is planned for Phase 7.
+Frontdesk is a support workspace for Arvo Systems. Agents can triage and claim tickets, manage public replies and private notes, and review SLA timing and audit history. Customers can manage their own requests, reply, and reopen eligible tickets.
 
 ## Prerequisites
 
@@ -63,7 +63,7 @@ npm run dev
 
 The migration commands use Prisma Migrate deploy to apply checked-in SQL to the dedicated local database using its owner role. They do not need a shadow database, CREATE DATABASE privilege or a reset. The seed is development-only and idempotent. It defines two agents, two customers, four tickets, public and private messages, and one sample holiday. Existing demo accounts retain their original hashes on reruns. Run the restricted development backfill after seeding to initialize reconstructable legacy clocks. It reports initialized tickets and clocks and unresolved cases. It keeps stored fixture timestamps and existing clocks intact. Historical resolution clocks remain unavailable when the activity record lacks reliable timing evidence.
 
-Open **http://127.0.0.1:5173**. The landing page checks relative health and readiness routes through the Vite proxy. Direct backend endpoints are **http://127.0.0.1:3000/api/health** and **http://127.0.0.1:3000/api/ready**. Health is independent of PostgreSQL. Readiness returns 503 and a safe JSON error if its database check fails.
+Open **http://127.0.0.1:5173**. Sign in with a seeded account to open the appropriate workspace. The Vite proxy forwards API requests to Express. Direct backend endpoints are **http://127.0.0.1:3000/api/health** and **http://127.0.0.1:3000/api/ready**. Health is independent of PostgreSQL. Readiness returns 503 and a safe JSON error if its database check fails.
 
 ```cmd
 npm run dev:client
@@ -71,6 +71,7 @@ npm run dev:server
 npm run typecheck
 npm run build
 npm test
+npm run test:client
 npm run test:db
 ```
 
@@ -80,20 +81,18 @@ Use the two `dev:*` commands separately if you prefer separate terminals. The se
 
 The synthetic accounts are `anika.agent@example.test`, `dev.agent@example.test`, `leena.customer@example.test`, and `omar.customer@example.test`. Use the configured seed password locally. If it changed after seeding, the existing account hashes are retained.
 
-From the open Vite page at `http://127.0.0.1:5173`, use the browser developer console to try login and requests on the same origin. The prompt supplies the password without placing it in the console command. Do not log the password or inspect or copy the session cookie for testing.
+For a browser walkthrough:
 
-```js
-await fetch('/api/auth/login', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: 'leena.customer@example.test', password: prompt('Local demo password') }),
-}).then((r) => ({ status: r.status }))
-await fetch('/api/auth/me').then((r) => r.json())
-await fetch('/api/tickets').then((r) => r.json())
-await fetch('/api/auth/logout', { method: 'POST' }).then((r) => ({ status: r.status }))
-```
+1. Sign in as Leena and select **New ticket**. Submit a synthetic request and note the reference in the detail header.
+2. Open a separate browser profile, sign in as Anika, select **Unassigned**, and search for the reference. Open the ticket and select **Claim ticket**.
+3. Send a **Public reply**, then switch to **Internal note** and add a synthetic note. The amber note stays in the staff conversation. Leena's conversation contains the public reply.
+4. As the agent, select **Request information**, enter the public question, and send it. Check the paused resolution clock and waiting cutoff. As Leena, reply to the question to resume the ticket.
+5. As the agent, refresh the ticket, change its priority with a reason, and resolve it. As Leena, reopen it with a message before the 168-hour cutoff. The agent can inspect the new resolution cycle and the previous cycle.
+6. Open **Audit history** to view the recorded actions. If more events exist, select **Load more activity**.
 
-For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies, add notes or change staff lifecycle state. The customer owner can reply to an open or eligible waiting ticket and reopen a manually resolved ticket within 168 hours. New tickets receive response and resolution clocks on the published calendar. Staff can inspect `sla` and filter with `sla=overdue` or `sla=historical`. A null individual clock means historical evidence was insufficient. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
+The queue uses server filtering, server counts, and server pagination. Its counts follow the current assignment, subject search, and priority filters. Customer routes use public data. Staff routes display separate first-response and resolution clocks, with working time supplied by the server and timestamps formatted in IST. A null clock shows unavailable timing.
+
+Run `npm run test:client` for frontend rendering and API-client tests. After a production build and setup of the isolated test database in `.env.test` and `.env.migrate`, run `npm run test:browser -w client` on Windows with Chrome installed. Set `FRONTDESK_CHROME_PATH` locally if Chrome is installed at a different path. The browser check listens on port 3077, creates synthetic accounts and tickets in `frontdesk_test`, and saves screenshots to the ignored `.tmp/phase7/` directory. Existing audit records are retained. Use a fresh synthetic ticket for each claim demo.
 
 Sessions use a host-only, HttpOnly, SameSite=Lax cookie with Secure in production. Writes require an allowed Origin or a same-origin Referer fallback. The process-local login limiter resets when the server restarts, is not shared across instances, and can temporarily throttle legitimate traffic sharing an IP or account. Session expiry and logout invalidate use immediately. Phase 3 retains expired and revoked rows.
 
@@ -108,7 +107,7 @@ One pre-lifecycle waiting ticket has no reliable paused resolution clock or stor
 ## Repeatable incident demonstrations
 
 1. Sign in as `leena.customer@example.test` and create a fresh ticket through `POST /api/tickets` with a subject, body and priority. It appears under `scope=unassigned`. Use a fresh ticket for each claim trial.
-2. In separate browser profiles, sign in as `anika.agent@example.test` and `dev.agent@example.test`. Submit `POST /api/tickets/:id/claim` from both. Expect one 200, one 409, and one CLAIMED event. Only the winner can post an assigned-agent reply.
+2. In separate browser profiles, sign in as `anika.agent@example.test` and `dev.agent@example.test`. Open the same unassigned ticket in both profiles before either agent selects **Claim ticket**. Select it in both profiles. Expect one 200, one 409, and one CLAIMED event. Only the winner can post an assigned-agent reply.
 3. As the winner, post a public reply and a synthetic private canary via `/internal-notes`. Check staff detail, then sign in as the owner and check detail and search. The owner sees public messages and no canary.
 4. As an agent, request `GET /api/tickets/:id/audit?limit=2` and continue with its cursor. Check actor IDs, actions, and timestamps. As a customer, the same endpoint returns 403.
 
