@@ -128,3 +128,11 @@ Audit rows accept inserts and reads through the runtime role. PostgreSQL permiss
 - **Development port conflict:** Close the other process using 5173 or choose another backend `PORT` in `.env` for a 3000 conflict. The frontend proxy reads that backend setting.
 
 Hosting and free-tier eligibility are reserved for Phase 9.
+
+## Completion Note
+
+I prioritized the complete ticket workflow, business-hours SLA tracking, concurrent ticket claiming, private-note confidentiality, and immutable audit history.
+
+**What I did not finish and why:** Due to the assessment's time constraints, I did not complete Firefox, WebKit, or comprehensive assistive-technology testing. Although scheduler reconciliation passed local tests, I did not directly verify automatic closure following a real hosting suspension. The demonstration holiday calendar has no special holiday entries.
+
+The application runs on Render's free tier, so the first request after inactivity may take approximately one minute to load.
