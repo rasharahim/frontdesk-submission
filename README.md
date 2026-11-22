@@ -88,3 +88,13 @@ Working time is Monday–Friday, 09:30–18:30 Asia/Kolkata, excluding dates in 
 156 automated tests passed with zero failures or skips. The hosted deployment passed one 52-request API acceptance run and one Chrome acceptance run. Concurrent claiming, private note confidentiality, and audit immutability all passed. The local workflow also passed in Chrome and Edge.
 
 The hosted holiday calendar contains no special dates. Firefox, WebKit, and comprehensive assistive-technology coverage were outside the completed verification. Local scheduler and reconciliation tests passed. Natural hosted cold-start duration and auto-close catch-up after an actual host suspension were not measured. Render Free can spin down after 15 idle minutes, and Render estimates about a minute to wake. The service can reconcile overdue work on startup and relevant requests. [Render Free limits](https://render.com/docs/free)
+
+## Completion Note
+
+**What I did not finish and why:** I prioritized completing and testing the core ticket workflow, SLA enforcement, concurrent ticket claiming, private-note confidentiality, and immutable audit history within the assessment timeframe.
+
+I did not complete Firefox, WebKit, or comprehensive assistive-technology testing. Although scheduler and reconciliation tests passed locally, I did not verify automatic closure after an actual hosted suspension. The hosted demonstration calendar does not include special holiday entries.
+
+The application uses Render's free tier, which can introduce a startup delay after inactivity.
+
+Development was completed incrementally across ten tested phases in a separate private repository. This public repository contains the reviewed, sanitized application snapshot and evaluator documentation.
