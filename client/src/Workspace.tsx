@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowLeft, Check, Clock3, History, LockKeyhole, MessageSquare, RefreshCw, Send, UserRound } from 'lucide-react'
-import { ApiError, errorText, type Request } from './api'
+import { ApiError, errorText, writeErrorText, type Request } from './api'
 import type { AuditPage, Clock, Detail, Identity, Message, StaffDetail, StaffTicket } from './contracts'
 import { priorities } from './contracts'
 import { navigate } from './navigation'
@@ -42,7 +42,7 @@ export function NewTicket({ request, back, source }: { request: Request; back: s
         subject, body, priority: form.get('priority'), ...(source ? { sourceTicketId: source } : {}),
       } })
       navigate(customerBase + '/' + ticket.id)
-    } catch (failure) { setError(errorText(failure)) }
+    } catch (failure) { setError(writeErrorText(failure, 'Check My tickets')) }
     finally { submitting.current = false; setBusy(false) }
   }
   return <><Back to={back} /><header className="page-heading"><div><h1>New support ticket</h1><p>Tell the support team what you need help with.</p></div></header>
@@ -183,7 +183,7 @@ export function Workspace({ id, user, request, back }: { id: string; user: Ident
       setAuditVersion((value) => value + 1)
       resource.reload()
     } catch (error) {
-      setFailure(errorText(error))
+      setFailure(writeErrorText(error, 'Refresh the ticket to check its current state'))
       if (error instanceof ApiError) {
         setFailureCode(error.code)
         if (error.status === 409 || error.status === 403) resource.reload()

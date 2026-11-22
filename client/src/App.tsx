@@ -105,9 +105,11 @@ export function App() {
     setUser(null)
     navigate('/login', true)
   }, [])
-  const request = useCallback<Request>((path, options) => {
+  const request = useCallback<Request>(async <T,>(path: string, options?: Parameters<Request>[1]) => {
     const activeGeneration = generation.current
-    return api(path, options, () => { if (activeGeneration === generation.current) clear(true) })
+    const result = await api<T>(path, options, () => { if (activeGeneration === generation.current) clear(true) })
+    if (activeGeneration !== generation.current) throw new DOMException('Session changed', 'AbortError')
+    return result
   }, [clear])
   useEffect(() => {
     const controller = new AbortController()

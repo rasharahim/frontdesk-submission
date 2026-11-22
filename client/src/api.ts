@@ -30,3 +30,10 @@ export async function api<T>(path: string, { method, body, signal }: Options = {
   try { return await response.json() } catch { throw new ApiError(response.status, 'INVALID_RESPONSE', 'Frontdesk returned an unexpected response.') }
 }
 export const errorText = (error: unknown) => error instanceof ApiError ? error.message : 'Something went wrong. Please try again.'
+
+export function writeErrorText(error: unknown, check: string) {
+  if (error instanceof ApiError && (error.status === 0 || error.status >= 500 || error.code === 'INVALID_RESPONSE')) {
+    return 'Frontdesk could not confirm this change. ' + check + ' before trying again.'
+  }
+  return errorText(error)
+}

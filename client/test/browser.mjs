@@ -8,9 +8,11 @@ import bcrypt from 'bcrypt'
 import {createApp} from '../../server/dist/app.js'
 import {createDatabase} from '../../server/dist/lib/db.js'
 import {isLocalDatabase} from '../../server/dist/config/env.js'
+import {reconcileTicket} from '../../server/dist/tickets/reconciliation.js'
 
 process.chdir(fileURLToPath(new URL('../../', import.meta.url)))
-await mkdir('.tmp/phase7', { recursive: true })
+const evidence = resolve('.tmp/phase8', process.env.FRONTDESK_BROWSER_LABEL === 'edge' ? 'edge' : 'chrome')
+await mkdir(evidence, { recursive: true })
 process.loadEnvFile('.env.test')
 process.loadEnvFile('.env.migrate')
 const ru=process.env.TEST_DATABASE_URL, ou=process.env.TEST_MIGRATION_DATABASE_URL
@@ -21,7 +23,7 @@ const subject='Browser verification '+randomUUID().slice(0,8)
 const serverApp=createApp({checkDatabase:()=>db.$queryRaw`SELECT 1`, staticDir:resolve('client/dist'), api:{db,settings:{
  cookieName:'browser_session',ttlHours:8,secure:false,origins:['http://127.0.0.1:3077']}}})
 const server=serverApp.listen(3077,'127.0.0.1')
-const profile=resolve('.tmp/phase7/chrome-'+randomUUID())
+const profile=resolve(evidence, 'profile-'+randomUUID())
 const chrome=spawn(process.env.FRONTDESK_CHROME_PATH ?? 'C:/Program Files/Google/Chrome/Application/chrome.exe',['--headless=new','--disable-gpu','--no-first-run',
  '--remote-debugging-port=0','--user-data-dir='+profile],{stdio:'ignore',windowsHide:true})
 chrome.on('error', () => {})
@@ -38,6 +40,7 @@ async function until(predicate, msg) {
 }
 let commandId=0
 const pending=new Map()
+const pausedResponses=new Map()
 function command(method, params={}, sessionId){
  const id=++commandId
  return new Promise((resolve,reject)=>{
@@ -82,12 +85,12 @@ async function tab(width=1440){
  }
  const shot=async(filename)=>{
    const {data}=await send('Page.captureScreenshot',{format:'png'})
-   await writeFile('.tmp/phase7/'+filename+'.png',Buffer.from(data,'base64'))
+   await writeFile(resolve(evidence, filename+'.png'),Buffer.from(data,'base64'))
  }
  const fit=async()=>{
   assert(await evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Unexpected horizontal page overflow')
  }
- return {evaluate,send,goto,see,click,fill,shot,fit,size}
+ return {evaluate,send,goto,see,click,fill,shot,fit,size,sessionId}
 }
 async function login(page,user, bad=false){
  await page.see('Sign in to Frontdesk')
@@ -95,30 +98,32 @@ async function login(page,user, bad=false){
  await page.fill('input[name=password]',bad?'invalid-password':password)
  await page.click('Sign in')
  if(bad) await page.see('Email or password is incorrect.')
- else await page.see(user.role==='AGENT'?'Ticket queue':'My tickets')
+ else await until(()=>page.evaluate(()=>!!document.querySelector('.identity')),'Authenticated shell did not mount')
 }
 
 try {
  const identities=[]
  const hash=await bcrypt.hash(password,4)
- for(const [displayName,role] of [['Taylor Test','CUSTOMER'],['Morgan Test','AGENT'],['Casey Test','AGENT']]){
+ for(const [displayName,role] of [['Taylor Test','CUSTOMER'],['Morgan Test','AGENT'],['Casey Test','AGENT'],['Jordan Test','CUSTOMER']]){
    identities.push(await owner.user.create({data:{email:randomUUID()+'@example.test',role,displayName,passwordHash:hash},
       select:{email:true,role:true,id:true}}))
  }
- const port=await until(async()=> (await readFile(resolve(profile,'DevToolsActivePort'),'utf8').catch(()=>''))?.split(/\r?\n/).filter(Boolean)[0],' waiting for Chrome')
+ const port=await until(async()=> (await readFile(resolve(profile,'DevToolsActivePort'),'utf8').catch(()=>''))?.split(/\r?\n/).filter(Boolean)[0],'Waiting for the Chromium debugging port')
  const actualPort=port
  assert(actualPort, 'Chrome debugging port unavailable')
  const version=await fetch('http://127.0.0.1:'+actualPort+'/json/version').then(r=>r.json())
  ws=new WebSocket(version.webSocketDebuggerUrl)
  await new Promise((res,rej)=>{ws.addEventListener('open',res,{once:true});ws.addEventListener('error',rej,{once:true})})
  ws.addEventListener('message',({data})=>{
-   const {id,result,error}=JSON.parse(data)
+   const {id,result,error,method,params,sessionId}=JSON.parse(data)
+   if(method==='Fetch.requestPaused') pausedResponses.set(sessionId,params)
    const callbacks=pending.get(id)
    if(callbacks){pending.delete(id);if(error)callbacks.reject(Error(error.message));else callbacks.resolve(result)}
  })
- const [customer,agent,other]=await Promise.all([tab(),tab(),tab()])
- await Promise.all([customer.goto('/login'),agent.goto('/login'),other.goto('/login')])
+ let [customer,agent,other]=await Promise.all([tab(),tab(),tab()])
+ await Promise.all([customer.goto('/customer/tickets'),agent.goto('/login'),other.goto('/login')])
  await customer.see('Sign in to Frontdesk')
+ assert(await customer.evaluate(()=>location.pathname==='/login'),'Protected URL did not redirect to login')
  await customer.shot('login-desktop')
  await customer.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
  await customer.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Tab',code:'Tab',windowsVirtualKeyCode:9})
@@ -141,7 +146,7 @@ try {
  await customer.send('Network.enable')
  await customer.send('Network.emulateNetworkConditions',{offline:true,latency:0,downloadThroughput:0,uploadThroughput:0})
  await customer.click('Send reply')
- await customer.see('Could not connect to Frontdesk.')
+ await customer.see('Frontdesk could not confirm this change.')
  assert(await customer.evaluate(()=>document.querySelector('textarea').value==='A public reply from the customer'),'Failed send discarded the draft')
  await customer.send('Network.emulateNetworkConditions',{offline:false,latency:0,downloadThroughput:-1,uploadThroughput:-1})
  await customer.click('Send reply')
@@ -167,16 +172,34 @@ try {
  await agent.see('Unassigned tickets')
  await Promise.all([agent.goto(agentPath),other.goto(agentPath)])
  await Promise.all([agent.see('Claim ticket'),other.see('Claim ticket')])
- await agent.click('Claim ticket')
- await agent.see('Ticket assigned to you.')
- await other.click('Claim ticket')
+ const ticketId=customerPath.split('/').at(-1)
+ const clocksBefore=await db.slaClock.findMany({where:{ticketId},orderBy:{id:'asc'}})
+ await Promise.all([agent.click('Claim ticket'),other.click('Claim ticket')])
+ const winner=await until(async()=>{
+   if(await agent.evaluate(()=>document.body.innerText.includes('Ticket assigned to you.')))return 1
+   if(await other.evaluate(()=>document.body.innerText.includes('Ticket assigned to you.')))return 2
+ },'Neither concurrent browser claim succeeded')
+ if(winner===2) [agent,other]=[other,agent]
  await other.see('This ticket has already been claimed.')
- await other.see('Morgan Test')
- out('Two authenticated browser agents: winning claim and visible conflict with refreshed assignee')
+ await other.see(winner===1?'Morgan Test':'Casey Test')
+ await other.shot('agent-claim-conflict')
+ const assigned=await db.ticket.findUniqueOrThrow({where:{id:ticketId}})
+ const observed=await db.auditEvent.findMany({where:{ticketId,action:'CLAIMED'}})
+ assert(assigned.assigneeId===identities[winner].id&&observed.length===1&&observed[0].actorId===assigned.assigneeId,'Persisted claim attribution mismatch')
+ assert(JSON.stringify(await db.slaClock.findMany({where:{ticketId},orderBy:{id:'asc'}}),(_,v)=>typeof v==='bigint'?String(v):v)
+   ===JSON.stringify(clocksBefore,(_,v)=>typeof v==='bigint'?String(v):v),'Claim changed stored SLA clocks')
+ const directClaim=page=>page.evaluate(async id=>(await fetch('/api/tickets/'+id+'/claim',{method:'POST',
+   headers:{'Content-Type':'application/json'},body:'{}'})).status,ticketId)
+ assert(await directClaim(agent)===409&&await directClaim(other)===409,'Repeat claim or steal was accepted')
+ await other.goto(agentPath)
+ await other.see('Service levels')
+ assert(await other.evaluate(()=>![...document.querySelectorAll('button')].some(el=>['Claim ticket','Send reply','Add internal note'].includes(el.textContent.trim()))),'Losing agent retained mutation controls')
+ out('Concurrent browser claims: one success, one conflict, one event, unchanged clocks and no losing-agent controls')
  await agent.see('Service levels')
  await agent.fill('textarea','A public reply from the support agent')
  await agent.click('Send reply')
  await agent.see('Public reply sent.')
+ await agent.see('Completed on time')
  await agent.click('Internal note')
  await agent.fill('textarea',marker)
  await agent.click('Add internal note')
@@ -201,6 +224,7 @@ try {
  await agent.fill('textarea','Could you send the steps to reproduce?')
  await agent.click('Send question and wait')
  await agent.see('Paused')
+ await agent.shot('agent-sla-panel')
  await customer.goto(customerPath)
  await customer.see('Could you send the steps to reproduce?')
  await customer.see('A public reply from the support agent')
@@ -209,6 +233,13 @@ try {
  await customer.fill('textarea','Steps supplied by the customer.')
  await customer.click('Send reply')
  await customer.see('Steps supplied by the customer.')
+ const customerChecks=await customer.evaluate(async (id,marker)=>{
+   const paths=['/tickets','/tickets?q='+encodeURIComponent(marker),'/tickets/'+id,'/tickets/'+id+'?includeInternal=true','/tickets/'+id+'/audit']
+   const replies=await Promise.all(paths.map(path=>fetch('/api'+path).then(async r=>({status:r.status,text:await r.text()}))))
+   return {statuses:replies.map(r=>r.status),visible:replies.some(r=>r.text.includes(marker)),privateHits:JSON.parse(replies[1].text).total,
+     storage:localStorage.length+sessionStorage.length}
+ },ticketId,marker)
+ assert(customerChecks.statuses.join()==='200,200,200,400,403'&&!customerChecks.visible&&customerChecks.privateHits===0&&customerChecks.storage===0,'Customer network or browser storage privacy regression')
  await agent.click('Refresh')
  await agent.see('Resolve ticket')
  await agent.click('Change priority')
@@ -227,7 +258,7 @@ try {
  await agent.click('Refresh')
  await agent.see('Resolution · Cycle 2')
  out('Real ticket creation, public and private messages, wait, customer resume, priority, resolution, reopen and SLA cycle passed')
- for(const width of [1440,1024,768,390,360]){
+ for(const width of [1440,1280,1024,768,390,360]){
    await Promise.all([agent.size(width),customer.size(width)])
    await Promise.all([agent.fit(),customer.fit()])
    if(width===390){await agent.shot('agent-workspace-mobile');await customer.shot('customer-ticket-mobile')}
@@ -236,7 +267,7 @@ try {
  await agent.see('Ticket queue')
  await agent.fill('.search input',subject)
  await agent.see(subject)
- for(const width of [1024,768,390,360]){
+ for(const width of [1280,1024,768,390,360]){
   await agent.size(width)
   await agent.fit()
   if(width===390)await agent.shot('agent-queue-mobile')
@@ -245,10 +276,41 @@ try {
  await customer.see('New support ticket')
  await customer.fit()
  await customer.shot('customer-new-mobile')
- out('Layout checks at 1440, 1024, 768, 390 and 360 pixels')
+ out('Layout checks at 1440, 1280, 1024, 768, 390 and 360 pixels')
  out('Keyboard focus, network error draft recovery, audit cursor pagination and customer request isolation passed')
  await customer.goto(agentPath)
  await customer.see('Page not available')
+ const closureSubject='Closure QA '+randomUUID().slice(0,8)
+ await customer.click('New ticket')
+ await customer.see('New support ticket')
+ await customer.fill('input[name=subject]',closureSubject)
+ await customer.fill('textarea[name=body]','Synthetic waiting cutoff verification')
+ await customer.click('Create ticket')
+ await customer.see(closureSubject)
+ const waitingPath=await customer.evaluate(()=>location.pathname)
+ const waitingId=waitingPath.split('/').at(-1)
+ await agent.goto(waitingPath.replace('/customer/','/agent/'))
+ await agent.see('Claim ticket')
+ await agent.click('Claim ticket')
+ await agent.see('Ticket assigned to you.')
+ await agent.click('Request information')
+ await agent.fill('textarea','Please send additional details.')
+ await agent.click('Send question and wait')
+ await agent.see('Paused')
+ await customer.click('Refresh')
+ await customer.see('Please send additional details.')
+ await customer.fill('textarea','Draft written before reconciliation.')
+ const waiting=await db.ticket.findUniqueOrThrow({where:{id:waitingId}})
+ assert(waiting.closeDueAt,'Waiting ticket did not persist a cutoff')
+ await reconcileTicket(db,waitingId,()=>new Date(+waiting.closeDueAt+60_000))
+ await customer.click('Send reply')
+ await customer.see('This ticket is closed. Create a new ticket to continue.')
+ await customer.see('Unsent message')
+ assert(await customer.evaluate(()=>!!document.querySelector('a[href*="/new?from="]')&&!document.querySelector('textarea')),'Closed ticket did not offer a fresh request')
+ const closureEvents=await db.auditEvent.findMany({where:{ticketId:waitingId,action:'AUTO_CLOSED'}})
+ assert(closureEvents.length===1&&closureEvents[0].actorKind==='SYSTEM'&&
+   +closureEvents[0].effectiveAt===+waiting.closeDueAt,'Delayed automatic closure audit did not preserve the cutoff and system actor')
+ out('Delayed automatic closure: system audit, cutoff, reply conflict and retained draft verified')
  await customer.click('Sign out')
  await customer.see('Sign in to Frontdesk')
  await login(customer,identities[0])
@@ -258,6 +320,50 @@ try {
  await customer.click('Refresh')
  await customer.see('Your session ended.')
  assert(await customer.evaluate((title)=>!document.body.innerText.includes(title),subject),'Protected state visible')
+ // Pause a real successful response after PostgreSQL has committed. Logout and sign in as another user in the same browser context.
+ await login(customer,identities[0])
+ await customer.click('New ticket')
+ await customer.see('New support ticket')
+ await customer.fill('input[name=subject]','Delayed response '+randomUUID())
+ await customer.fill('textarea[name=body]','A committed write whose response is delayed across logout.')
+ await customer.send('Fetch.enable',{patterns:[{urlPattern:'http://127.0.0.1:3077/api/tickets',requestStage:'Response'}]})
+ await customer.click('Create ticket')
+ const delayed=await until(()=>pausedResponses.get(customer.sessionId),'Real creation response did not reach the browser barrier')
+ assert(delayed.responseStatusCode===201,'Expected the original write to commit before account switch')
+ await customer.click('Sign out')
+ await login(customer,identities[3])
+ await customer.see('My tickets')
+ await customer.send('Fetch.continueRequest',{requestId:delayed.requestId})
+ await customer.send('Fetch.disable')
+ await customer.see('No tickets found')
+ assert(await customer.evaluate(()=>location.pathname==='/customer/tickets'),'Old write response navigated the new account')
+ await customer.goto(customerPath)
+ await customer.see('Ticket not found')
+ await customer.click('Sign out')
+ await login(customer,identities[0])
+ await customer.goto('/customer/tickets')
+ await customer.see(subject)
+ await customer.size(390)
+ await customer.shot('customer-dashboard-mobile')
+ await customer.click('Sign out')
+ await agent.goto(agentPath)
+ await agent.see(marker)
+ await agent.click('Audit history')
+ await agent.see('Ticket claimed')
+ await agent.click('Sign out')
+ await login(agent,identities[winner===1?2:1])
+ await agent.goto(agentPath)
+ await agent.see(marker)
+ assert(await agent.evaluate(()=>!document.querySelector('textarea')),'Switched agent inherited assigned-agent composer')
+ await agent.click('Sign out')
+ await login(agent,identities[0])
+ assert(await agent.evaluate(()=>!document.body.innerText.includes('Audit history')),'Staff history visible after switching to customer')
+ await agent.goto(customerPath)
+ await agent.see(subject)
+ assert(await agent.evaluate(value=>!document.body.innerText.includes(value),marker),'Staff note visible after account switch')
+ await agent.click('Sign out')
+ await other.click('Sign out')
+ out('Account isolation: customer-to-customer with a delayed committed write, agent-to-agent, agent-to-customer, and logout')
  const response=await fetch('http://127.0.0.1:3077'+agentPath,{headers:{Accept:'text/html'}})
  assert(response.ok,'Nested production route unavailable')
  const [health,ready,missingApi,missingAsset]=await Promise.all(['/api/health','/api/ready','/api/missing','/assets/nonexistent.js'].map(async p=>(await fetch('http://127.0.0.1:3077'+p)).status))

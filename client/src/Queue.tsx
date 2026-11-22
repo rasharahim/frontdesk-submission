@@ -45,9 +45,12 @@ export function Queue({ user, request, url }: { user: Identity; request: Request
     <header className="page-heading"><div><h1>{title}</h1><p>{staff ? 'Find requests, manage assignments, and track service deadlines.' : 'Track your requests and reply to the support team.'}</p></div>
       {staff ? <button className="button secondary" onClick={tickets.reload}><RefreshCw size={16} aria-hidden />Refresh</button>
         : <Link className="button primary" to={base + '/new'}><Plus size={17} aria-hidden />New ticket</Link>}</header>
-    {counts && <section className="metrics" aria-label="Counts for the current assignment, search and priority filters">
+    {counts && <section aria-labelledby="queue-counts">
+      <h2 id="queue-counts" className="muted small mb-2">Counts by assignment, search and priority</h2>
+      <div className="metrics">
       {([[Inbox, 'Open', counts.open], [TriangleAlert, 'Overdue', counts.overdue], [Clock3, 'Waiting', counts.waiting]] as const).map(([Icon, label, count]) =>
         <div className={'metric ' + label.toLowerCase()} key={label}><span className="metric-icon"><Icon size={19} aria-hidden /></span><div><span>{label}</span><strong>{count}</strong></div></div>)}
+      </div>
     </section>}
     <section className="card queue" aria-label="Tickets">
       <div className="filter-bar">

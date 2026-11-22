@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { api } from './api'
+import { api, ApiError, writeErrorText } from './api'
 import { queueQuery, screen } from './navigation'
 import { Conversation, Timing } from './Workspace'
 import type { Clock } from './contracts'
@@ -29,6 +29,15 @@ describe('protected routes and paginated queue queries', () => {
 })
 
 describe('same-origin API requests', () => {
+  it('directs ambiguous writes to an authoritative check and preserves explicit conflicts', () => {
+    const check = 'Refresh the ticket'
+    expect(writeErrorText(new ApiError(0, 'NETWORK', 'Offline'), check))
+      .toBe('Frontdesk could not confirm this change. Refresh the ticket before trying again.')
+    expect(writeErrorText(new ApiError(503, 'UNAVAILABLE', 'Unavailable'), check))
+      .toContain('could not confirm')
+    expect(writeErrorText(new ApiError(409, 'TICKET_CLOSED', 'This ticket is closed.'), check))
+      .toBe('This ticket is closed.')
+  })
   it('sends an empty claim body as JSON with browser session cookies', async () => {
     const transport = vi.fn().mockResolvedValue(Response.json({ id }))
     vi.stubGlobal('fetch', transport)
