@@ -1,0 +1,5 @@
+# Submission notes
+
+Login HTML, `/api/health` and `/api/ready` returned HTTP 200. Health returned `{"status":"ok","service":"frontdesk"}` and readiness returned `{"status":"ready"}`. Application code remains at the Phase 9 deployment snapshot `b1fa6a2318f7ce5219f3b8d61ec72aa0a5ef52c6`. Phase 9 evidence remains applicable: 156 automated tests, one hosted Chrome acceptance run, and one hosted API acceptance run with 52 requests passed. INC-0291, INC-0304 and INC-0318 passed.
+
+Keep the service available through at least November 29 if submission occurs November 22. If the submission date changes, count seven days from the actual date. The Free database's expected December 22 expiry follows the reported November 22 creation date and Render's documented 30-day policy. The exact dashboard expiry remains unverified. The service can sleep after 15 minutes idle and Render estimates about one minute to wake. Natural hosted wake duration and catch-up after an actual suspension were not measured. No keepalive was configured and no additional cost was incurred. [Render Free limits](https://render.com/docs/free)
