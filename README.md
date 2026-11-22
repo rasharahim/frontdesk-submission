@@ -1,6 +1,6 @@
 # Frontdesk
 
-Frontdesk is a customer support ticket management system. Phase 5 adds waiting and resumption, manual resolution, reopening, priority changes, and automatic closure with a built-in scheduler. Staff APIs show ticket and SLA state. The React app remains a development status page. Claiming and the dashboard are planned for later phases.
+Frontdesk is a customer support ticket management system. Phase 5 adds waiting and resumption, manual resolution, reopening, priority changes, and automatic closure with a built-in scheduler. Staff APIs show ticket and SLA state. The React app remains a development status page. Phase 6 adds atomic claiming, private-note acceptance checks, and paginated staff audit history. The full dashboard is planned for Phase 7.
 
 ## Prerequisites
 
@@ -104,6 +104,15 @@ Run `npm run db:lifecycle:demo` after the development seed. It creates assigned 
 The scheduler runs on startup and every 60 seconds while the service is awake. Set `LIFECYCLE_INTERVAL_SECONDS` to an integer from 1 to 3600 to change the interval. It checks bounded batches with PostgreSQL row locks and retries failures on the next tick. The app stops scheduling on shutdown and waits for the in-flight batch before disconnecting. Health and readiness keep their existing meanings. Authenticated detail and mutation requests reconcile the target. Queue reads catch up a bounded number of matching tickets before counting or filtering. Free hosting can suspend the process, which delays execution. The recorded logical cutoff remains the applicable closure time.
 
 One pre-lifecycle waiting ticket has no reliable paused resolution clock or stored cutoff. It remains visible with null timing and rejects resume with `SLA_HISTORY_UNAVAILABLE`. The legacy resolved ticket can reopen if its recorded resolution instant is still within the window. The new cycle starts at 2 and the original missing cycle remains unavailable.
+
+## Repeatable incident demonstrations
+
+1. Sign in as `leena.customer@example.test` and create a fresh ticket through `POST /api/tickets` with a subject, body and priority. It appears under `scope=unassigned`. Use a fresh ticket for each claim trial.
+2. In separate browser profiles, sign in as `anika.agent@example.test` and `dev.agent@example.test`. Submit `POST /api/tickets/:id/claim` from both. Expect one 200, one 409, and one CLAIMED event. Only the winner can post an assigned-agent reply.
+3. As the winner, post a public reply and a synthetic private canary via `/internal-notes`. Check staff detail, then sign in as the owner and check detail and search. The owner sees public messages and no canary.
+4. As an agent, request `GET /api/tickets/:id/audit?limit=2` and continue with its cursor. Check actor IDs, actions, and timestamps. As a customer, the same endpoint returns 403.
+
+Use the existing local demo password without sharing or logging it. FD-5 and FD-6 are time-sensitive lifecycle examples. Verify their current eligibility before any evaluator walkthrough. Automated contention, privacy and database permission tests use only the isolated test database.
 
 ## Database integrity
 

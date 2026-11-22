@@ -1,4 +1,6 @@
 import { Router } from 'express'
+import { z } from 'zod'
+import { auditQuery, readAudit } from './audit.js'
 import type { Sessions } from '../auth/session.js'
 import type { PrismaClient } from '../generated/prisma/client.js'
 import { validate } from '../http/errors.js'
@@ -16,7 +18,16 @@ export function ticketRoutes(db: PrismaClient, session: Sessions, now: () => Dat
     res.json(await service.list(session.identity(req).actor, validate(queueInput, req.query)))
   })
   router.get('/:id', async (req, res) => {
+    validate(z.strictObject({}), req.query)
     res.json(await service.get(session.identity(req).actor, validate(idSchema, req.params.id)))
+  })
+  router.post('/:id/claim', session.requireRole('AGENT'), async (req, res) => {
+    const id = validate(idSchema, req.params.id)
+    validate(z.strictObject({}), req.body ?? {})
+    res.json(await service.claim(session.identity(req).actor, id))
+  })
+  router.get('/:id/audit', session.requireRole('AGENT'), async (req, res) => {
+    res.json(await readAudit(db, validate(idSchema, req.params.id), validate(auditQuery, req.query), now))
   })
   for (const [path, role, action] of [
     ['customer-replies', 'CUSTOMER', 'customerReply'], ['public-replies', 'AGENT', 'publicReply'], ['internal-notes', 'AGENT', 'note'],

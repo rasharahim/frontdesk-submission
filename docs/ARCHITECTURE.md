@@ -61,7 +61,7 @@ Treat IDs and role information as application-managed. SQL CHECK constraints enf
 
 ## Transactions and incident controls
 
-- **INC-0291.** Claim with one conditional UPDATE for id, status OPEN and assigneeId IS NULL, returning the updated row. One affected row means success. Zero means inspect existence and return 404 or 409. Insert the claim event in the same transaction. Subsequent agent mutations require the authenticated assignee. Lock the ticket row before checking eligibility, capture the time after obtaining the lock, update ticket, message and clocks, and append audit before commit. Use the same ticket-first lock order in all writers.
+- **INC-0291.** Claim under the existing ticket row lock. Recheck OPEN and null assignee after acquiring it, then update assignment and activity timestamp. Independent server processes serialize on the PostgreSQL lock. Insert the claim event in the same transaction. Subsequent agent mutations require the authenticated assignee. Lock the ticket row before checking eligibility, capture the time after obtaining the lock, update ticket, message and clocks, and append audit before commit. Use the same ticket-first lock order in all writers.
 - **INC-0304.** Use a separate private-note endpoint with fixed message kind. Customer reads select only public messages with owner scope in SQL and serialize explicit customer fields. No audit endpoints for customers. Exclude note presence, previews, counts, search matches and staff activity timestamps from customer lists and detail. Any future customer export must share the public query and serializer. Keep customer responses uncached and redact message bodies from logs.
 - **INC-0318.** Each successful business mutation writes type, actor, timestamps, transition details and related IDs atomically. On failure all writes roll back. Migration owner creates audit table, denies runtime UPDATE, DELETE, TRUNCATE and ownership, and installs rejection triggers for UPDATE/DELETE and TRUNCATE. Runtime gets SELECT and column-scoped INSERT plus required sequence rights. PostgreSQL supplies the recording time and event ID. Revoke inherited/public write grants and schema CREATE privileges. The application can append events and a compromised runtime could append false events. The migration owner, provider and privileged DBA can alter grants or disable triggers. Confirm the host supports role separation in Phase 9 and state any unresolved limit in the submission.
 
@@ -73,13 +73,28 @@ The agent queue defaults to My tickets plus access to Unassigned and All. Includ
 
 ## Phase 3 integration boundaries
 
-The routes in `server/src/auth` authenticate and authorize from PostgreSQL sessions. The ticket module uses explicit role-specific Prisma projections, locks tickets before message writes, and stores audit events in the same transaction. An owned waiting ticket can accept replies before its cutoff. Opening the ticket and resuming resolution commit together. Staff replies and notes require assignment. The initial ticket description lives on Ticket, and further conversation lives on TicketMessage. Claiming and audit-history reads retain their planned later phase.
+The routes in `server/src/auth` authenticate and authorize from PostgreSQL sessions. The ticket module uses explicit role-specific Prisma projections, locks tickets before message writes, and stores audit events in the same transaction. An owned waiting ticket can accept replies before its cutoff. Opening the ticket and resuming resolution commit together. Staff replies and notes require assignment. The initial ticket description lives on Ticket, and further conversation lives on TicketMessage. Phase 6 adds claiming and staff-only audit reads.
 
 ## Phase 4 SLA integration
 
 The pure `server/src/sla` calendar and clock operations use integer milliseconds and explicit time inputs. PostgreSQL keeps both original and current budgets. The completion migration adds the final deadline and on-time flag, covered by the existing terminal immutability trigger. The application batches calendar and clock reads for the selected staff page and evaluates them at one request instant. SQL filters by stored running deadlines and historical breach markers before pagination.
 
 The creation transaction inserts both clocks before writing the audit record. An agent reply completes response under the same ticket lock used for message and audit writes. Backfill uses that lock as well, inserts only missing facts, and leaves previous cycles untouched. Prisma database sessions explicitly use UTC so timestamps retain their intended absolute instant even if the PostgreSQL server defaults to another timezone. The repair migration introduces append-only SLA deadline evidence with a clock foreign key and SELECT-only runtime access. A completed correction is projected at read time without changing any terminal row. Running corrections are committed with the active deadline update, so persistence predicates and clock transitions consume the same value. Phase 5 orchestrates the remaining clock transitions and scheduled reconciliation.
+
+## Phase 6 permission matrix
+
+| Principal | Ticket visibility | Mutation access | Audit access |
+|---|---|---|---|
+| Unauthenticated visitor | Health/readiness and public app shell only | Login only | 401 |
+| Customer owner | Own public ticket data and conversation | Create, public reply, and eligible reopen | 403 |
+| Unrelated customer | Foreign tickets return 404 | Cannot write foreign tickets | 403 |
+| Assigned agent | Staff queue, SLA and conversation | Approved staff lifecycle writes on assigned tickets | Read any ticket history |
+| Other agent | Staff queue, SLA and conversation | Claim eligible unassigned Open tickets. Assigned-only writes return 403 | Read any ticket history |
+| System reconciler | Locks eligible rows | Scoped closure and breach transitions | Appends system evidence |
+| Runtime database role | Granted tables and columns | Only the existing application grants | Select and column-scoped insert. History edits and changing protections are prohibited |
+| Migration owner or privileged administrator | Administrative trust boundary | Can change protections with sufficient privileges | Normal UPDATE, DELETE and TRUNCATE are rejected by triggers. An unrestricted administrator can bypass these protections |
+
+Assignment uses the same ticket-first locking order as lifecycle mutations. Claiming does not satisfy first response or change SLA, wait, resolution or ownership. A rollback of the claim event rolls back assignment. Existing schema and indexes support both endpoints.
 
 ## Lifecycle maintenance and hosting
 

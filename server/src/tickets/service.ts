@@ -5,7 +5,7 @@ import { idSchema, type CreateInput, type QueueInput } from './input.js'
 import { calendarSelect, initializeClocks, loadStaffSla, overdueWhere } from '../sla/persistence.js'
 
 import { messageFields as message, ticketLifecycle } from './lifecycle.js'
-import { batchSize, reconcileTicket, ticketNotFound } from './reconciliation.js'
+import { batchSize, lockTicket, reconcileTicket, ticketNotFound } from './reconciliation.js'
 
 const summary = { id: true, reference: true, subject: true, status: true, priority: true, createdAt: true } as const
 const staffSummary = { ...summary, updatedAt: true,
@@ -129,5 +129,25 @@ export function ticketService(db: PrismaClient, now: () => Date) {
     }, { isolationLevel: 'RepeatableRead' })
   }
 
-  return { create, list, get, mutate: lifecycle.mutate }
+  async function claim(actor: Actor, id: string) {
+    if (actor.role !== 'AGENT') throw new HttpError(403, 'FORBIDDEN', 'Permission denied.')
+    return db.$transaction(async (tx) => {
+      const ticket = await lockTicket(tx, id)
+      if (!ticket) throw ticketNotFound()
+      if (ticket.status !== 'OPEN') throw new HttpError(409, 'TICKET_STATE_CONFLICT', 'Only open tickets can be claimed.')
+      if (ticket.assigneeId) throw new HttpError(409, 'TICKET_ALREADY_CLAIMED', 'This ticket has already been claimed.')
+      const at = now()
+      const { calendarId, ...fields } = await tx.ticket.update({
+        where: { id }, data: { assigneeId: actor.id, updatedAt: at }, select: { ...staffSummary, calendarId: true },
+      })
+      await tx.auditEvent.create({ data: {
+        ticketId: id, actorKind: 'USER', actorId: actor.id, action: 'CLAIMED', effectiveAt: at,
+        oldStatus: ticket.status, newStatus: ticket.status, details: { previousAssigneeId: null, assigneeId: actor.id },
+      }, select: { id: true } })
+      const sla = await loadStaffSla(tx, [{ id, calendarId }], at)
+      return { ...fields, sla: sla.get(id) }
+    })
+  }
+
+  return { create, list, get, claim, mutate: lifecycle.mutate }
 }
