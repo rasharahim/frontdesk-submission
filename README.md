@@ -1,6 +1,6 @@
 # Frontdesk
 
-Frontdesk is a customer support ticket management system. Phase 4 adds business-hours deadlines, persisted initial SLA clocks, first-response completion and staff SLA views. Authentication and audited ticket APIs remain available. The React app remains a development status page. Full lifecycle transitions, claiming and the dashboard are planned for later phases.
+Frontdesk is a customer support ticket management system. Phase 5 adds waiting and resumption, manual resolution, reopening, priority changes, and automatic closure with a built-in scheduler. Staff APIs show ticket and SLA state. The React app remains a development status page. Claiming and the dashboard are planned for later phases.
 
 ## Prerequisites
 
@@ -74,7 +74,7 @@ npm test
 npm run test:db
 ```
 
-Use the two `dev:*` commands separately if you prefer separate terminals. `npm test` runs HTTP/configuration and deterministic SLA tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
+Use the two `dev:*` commands separately if you prefer separate terminals. The server uses the TypeScript compiler watch and Node watch on Windows. Database maintenance commands compile to an ignored local directory before running. `npm test` runs HTTP/configuration and deterministic SLA tests without an external database. `npm run test:db` requires the migrated isolated test database. Its audit fixtures roll back rather than being deleted. `npm run build` compiles both workspaces, and `npm start` runs the compiled Express server. Express serves `client/dist` in production mode. Production-mode runtime variables are supplied by the process environment.
 
 ## Try the APIs locally
 
@@ -93,9 +93,17 @@ await fetch('/api/tickets').then((r) => r.json())
 await fetch('/api/auth/logout', { method: 'POST' }).then((r) => ({ status: r.status }))
 ```
 
-For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies or private notes. Customer replies currently require an open ticket. New tickets receive response and resolution clocks on the published calendar. Staff can inspect `sla` and filter with `sla=overdue` or `sla=historical`. A null individual clock means historical evidence was insufficient. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
+For an agent queue, log in as an agent and request `/api/tickets?scope=all`. Only the assigned agent can post agent replies, add notes or change staff lifecycle state. The customer owner can reply to an open or eligible waiting ticket and reopen a manually resolved ticket within 168 hours. New tickets receive response and resolution clocks on the published calendar. Staff can inspect `sla` and filter with `sla=overdue` or `sla=historical`. A null individual clock means historical evidence was insufficient. For shapes, filters and write rules, see [API design](docs/API_DESIGN.md).
 
 Sessions use a host-only, HttpOnly, SameSite=Lax cookie with Secure in production. Writes require an allowed Origin or a same-origin Referer fallback. The process-local login limiter resets when the server restarts, is not shared across instances, and can temporarily throttle legitimate traffic sharing an IP or account. Session expiry and logout invalidate use immediately. Phase 3 retains expired and revoked rows.
+
+## Lifecycle demo and reconciliation
+
+Run `npm run db:lifecycle:demo` after the development seed. It creates assigned synthetic tickets called **Lifecycle demo: awaiting an export sample** and **Lifecycle demo: resolved export settings**. A rerun preserves both tickets and later changes. Use `dev.agent@example.test` and `omar.customer@example.test` with the existing local demo password. The agent can find both tickets under `scope=mine`. The customer can post to `/api/tickets/:id/customer-replies` on the waiting ticket and `/api/tickets/:id/reopen` on the resolved ticket. Both writes take a JSON body field. The waiting cutoff and 168-hour reopening window are based on when the demo is created.
+
+The scheduler runs on startup and every 60 seconds while the service is awake. Set `LIFECYCLE_INTERVAL_SECONDS` to an integer from 1 to 3600 to change the interval. It checks bounded batches with PostgreSQL row locks and retries failures on the next tick. The app stops scheduling on shutdown and waits for the in-flight batch before disconnecting. Health and readiness keep their existing meanings. Authenticated detail and mutation requests reconcile the target. Queue reads catch up a bounded number of matching tickets before counting or filtering. Free hosting can suspend the process, which delays execution. The recorded logical cutoff remains the applicable closure time.
+
+One pre-lifecycle waiting ticket has no reliable paused resolution clock or stored cutoff. It remains visible with null timing and rejects resume with `SLA_HISTORY_UNAVAILABLE`. The legacy resolved ticket can reopen if its recorded resolution instant is still within the window. The new cycle starts at 2 and the original missing cycle remains unavailable.
 
 ## Database integrity
 

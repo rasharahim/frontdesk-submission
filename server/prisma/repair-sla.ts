@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
-import { loadLocalEnv, isLocalDatabase } from '../src/config/env.js'
+import { loadLocalEnv, isLocalDatabase, projectRoot } from '../src/config/env.js'
 import { createDatabase } from '../src/lib/db.js'
 import { repairDeadlines, type DeadlineEvidence } from '../src/sla/repair.js'
 
@@ -26,7 +26,7 @@ async function run() {
     throw new Error('Specify the local development evidence file with development owner credentials.')
   }
   stage = 'evidence validation'
-  const root = fileURLToPath(new URL('../../', import.meta.url))
+  const root = fileURLToPath(projectRoot)
   const { validation } = manifest.parse(JSON.parse(readFileSync(resolve(root, process.argv[2]), 'utf8')))
   const scope = validation.map(({ reference, kind, state }) => [reference, kind, state].join(':')).sort()
   const allowed = ['FD-1:RESPONSE:RUNNING', 'FD-1:RESOLUTION:RUNNING', 'FD-2:RESPONSE:RUNNING',

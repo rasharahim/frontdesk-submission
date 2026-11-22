@@ -3,8 +3,12 @@ import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { BUSINESS_TIMEZONE } from '../sla/calendar.js'
 
+const defaultRoot = new URL('../../../', import.meta.url)
+export const projectRoot = import.meta.url.includes('/.tmp/maintenance/')
+  ? new URL('../../../../../', import.meta.url) : defaultRoot
+
 export function loadLocalEnv(name: '.env' | '.env.test' | '.env.migrate' = '.env') {
-  const path = fileURLToPath(new URL('../../../' + name, import.meta.url))
+  const path = fileURLToPath(new URL(name, projectRoot))
   if (existsSync(path)) process.loadEnvFile(path)
 }
 
@@ -33,6 +37,7 @@ const environment = z.object({
       return ['http:', 'https:'].includes(url.protocol) && url.origin === value
     } catch { return false }
   }).optional(),
+  LIFECYCLE_INTERVAL_SECONDS: z.coerce.number().int().min(1).max(3600).default(60),
   TRUST_PROXY: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
 }).superRefine((values, ctx) => {
   if (values.NODE_ENV === 'production' && !values.APP_ORIGIN?.startsWith('https://')) {

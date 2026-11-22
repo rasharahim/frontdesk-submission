@@ -17,6 +17,7 @@ function staffSla({ calendar, clocks }: TicketSla, asOf: Date, history = false) 
   return { asOf, calendarVersion: calendar.version, response: response ? evaluate(response, asOf, business) : null,
     resolution: resolution ? evaluate(resolution, asOf, business) : null,
     historicalBreach: clocks.some((clock) => clock.firstBreachedAt !== null),
+    resolutionHistoryIncomplete: !resolution || resolution.cycle > resolutions.length,
     ...(history ? { resolutionHistory: resolutions.slice(1).map((clock) => evaluate(clock, asOf, business)) } : {}),
   }
 }
@@ -85,7 +86,7 @@ export async function reconstructClocks(tx: Transaction, id: string) {
     const calendar = await tx.holidayCalendar.findUniqueOrThrow({ where: { id: ticket.calendarId }, select: calendarSelect })
     const business = calendarFromDates(calendar.holidays)
     const uninterrupted = ticket.status === 'OPEN' && events.length === 0
-    if (!hasResponse) {
+    if (!hasResponse && !events.some((event) => event.action === 'REOPENED')) {
       const first = await tx.ticketMessage.findFirst({
         where: { ticketId: id, kind: 'AGENT_PUBLIC', author: { role: 'AGENT' }, createdAt: {
           gte: ticket.createdAt, lte: ticket.waitingSince ?? ticket.resolvedAt ?? ticket.closedAt ?? undefined,

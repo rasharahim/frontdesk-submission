@@ -3,6 +3,9 @@ import { createApp } from './app.js'
 import { loadLocalEnv, parseEnv } from './config/env.js'
 import { createDatabase } from './lib/db.js'
 
+import { reconcileDue } from './tickets/reconciliation.js'
+import { startScheduler } from './tickets/scheduler.js'
+
 function start() {
   const production = process.env.NODE_ENV === 'production'
   if (!production) loadLocalEnv()
@@ -25,12 +28,23 @@ function start() {
       : undefined,
   })
   const host = config.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'
-  const server = app.listen(config.PORT, host, () => console.info('Frontdesk listening on ' + host + ':' + config.PORT))
+  let stopScheduler: (() => Promise<void>) | undefined
+  const server = app.listen(config.PORT, host, () => {
+    console.info('Frontdesk listening on ' + host + ':' + config.PORT)
+    stopScheduler = startScheduler(() => reconcileDue(db, () => new Date()),
+      config.LIFECYCLE_INTERVAL_SECONDS * 1000, console.info)
+  })
   server.on('error', (error: NodeJS.ErrnoException) => {
     console.error('Server could not listen (' + (error.code ?? 'unknown') + ').')
     process.exitCode = 1
   })
-  const stop = () => server.close(() => { void db.$disconnect() })
+  let stopping = false
+  const stop = () => {
+    if (stopping) return
+    stopping = true
+    const schedulerStopped = stopScheduler?.()
+    server.close(() => { void Promise.resolve(schedulerStopped).finally(() => db.$disconnect()) })
+  }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
 }

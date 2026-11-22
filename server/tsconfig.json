@@ -11,6 +11,7 @@
   "include": [
     "src",
     "prisma/seed.ts",
+    "prisma/lifecycle-demo.ts",
     "prisma/backfill-sla.ts",
     "prisma/repair-sla.ts",
     "prisma.config.ts",

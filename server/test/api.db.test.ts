@@ -1,3 +1,9 @@
+import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { createServer } from 'node:net'
+import { businessCalendar } from '../src/sla/calendar.js'
+import { startClock, pauseResolution } from '../src/sla/clock.js'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import bcrypt from 'bcrypt'
 import request from 'supertest'
@@ -5,8 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createApp } from '../src/app.js'
 import { isLocalDatabase, loadLocalEnv } from '../src/config/env.js'
 import { createDatabase } from '../src/lib/db.js'
-import { backfillClocks } from '../src/sla/persistence.js'
+import { initializeClocks, backfillClocks } from '../src/sla/persistence.js'
 import type { PrismaClient, UserRole } from '../src/generated/prisma/client.js'
+
+import { reconcileDue } from '../src/tickets/reconciliation.js'
 
 const origin = 'https://frontdesk.example.test'
 const password = randomBytes(24).toString('base64url')
@@ -491,5 +499,362 @@ describe('persisted SLA', () => {
     expect(second).toEqual({ initializedTickets: 0, initializedClocks: 0, unresolvedTickets: first.unresolvedTickets })
     expect(await runtime.slaClock.findMany({ where: { ticketId: assigned }, orderBy: { kind: 'asc' } })).toEqual(before)
     expect(await runtime.slaClock.count({ where: { ticketId: waiting } })).toBe(0)
+  })
+})
+
+describe('Phase 5 lifecycle', () => {
+  const start = new Date('2026-11-23T04:00:00.000Z')
+  const cutoff = new Date('2026-11-27T13:00:00.000Z')
+  const hours = 3_600_000
+  async function setup(priority: 'MEDIUM' | 'URGENT' = 'MEDIUM') {
+    let now = start
+    const target = application(() => now)
+    const subject = 'Lifecycle ' + randomUUID()
+    const data = { customerId: customer.id, assigneeId: agent.id, calendarId, priority, subject, description: 'Lifecycle fixture', createdAt: start }
+    const ticket = await runtime.$transaction(async (tx) => {
+      const result = await tx.ticket.create({ data })
+      await initializeClocks(tx, result, [])
+      return result
+    })
+    const cookies = new Map<string, { cookie: string; expires: number }>()
+    async function headers(email: string) {
+      let saved = cookies.get(email)
+      if (!saved || saved.expires <= +now) {
+        const response = await login(target, email).expect(200)
+        saved = { cookie: cookieOf(response), expires: +now + 8 * hours }
+        cookies.set(email, saved)
+      }
+      return { Cookie: saved.cookie, Origin: origin }
+    }
+    async function act(path: string, email: string, body?: Record<string, unknown>) {
+      const url = '/api/tickets/' + ticket.id + '/' + path
+      const req = path === 'priority' ? request(target).patch(url) : request(target).post(url)
+      req.set(await headers(email))
+      return body === undefined ? req : req.send(body)
+    }
+    const read = async (suffix: string, email = agent.email) => request(target).get('/api/tickets' + suffix).set(await headers(email))
+    const clock = (kind: 'RESPONSE' | 'RESOLUTION' = 'RESOLUTION') => runtime.slaClock.findFirstOrThrow({
+      where: { ticketId: ticket.id, kind }, orderBy: { cycle: 'desc' },
+    })
+    const event = (action: 'WAIT_STARTED' | 'WAIT_ENDED' | 'RESOLVED' | 'REOPENED' | 'AUTO_CLOSED' | 'PRIORITY_CHANGED' | 'SLA_BREACHED') =>
+      runtime.auditEvent.findMany({ where: { ticketId: ticket.id, action }, orderBy: { id: 'asc' } })
+    return { id: ticket.id, subject, at: (t: Date | string) => { now = new Date(t) }, act, read, clock, event,
+      ticket: () => runtime.ticket.findUniqueOrThrow({ where: { id: ticket.id } }),
+      wait: () => act('wait', agent.email, { body: 'Could you confirm?' }),
+      reply: () => act('customer-replies', customer.email, { body: 'Confirmed.' }),
+      resolve: (body?: string) => act('resolve', agent.email, body ? { body } : undefined),
+      reopen: () => act('reopen', customer.email, { body: 'Issue remains.' }),
+    }
+  }
+
+  it('pauses for a public question and resumes the worked Medium example at Friday 15:30 IST', async () => {
+    const f = await setup()
+    f.at('2026-11-23T08:00:00.000Z')
+    expect((await f.wait()).status).toBe(200)
+    expect(await f.clock()).toMatchObject({ state: 'PAUSED', elapsedMs: 14_400_000n })
+    expect(await f.clock('RESPONSE')).toMatchObject({ state: 'COMPLETED', completionOnTime: true })
+    expect(await f.ticket()).toMatchObject({ status: 'WAITING', waitingSince: new Date('2026-11-23T08:00:00Z'),
+      closeDueAt: new Date('2026-11-30T08:00:00Z') })
+    const [utc] = await runtime.$queryRaw<{ at: string; zone: string }[]>`
+      SELECT to_char("waitingSince" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS at,
+      current_setting('TimeZone') AS zone FROM "Ticket" WHERE id = ${f.id}::uuid`
+    expect(utc).toEqual({ at: '2026-11-23T08:00:00.000Z', zone: 'UTC' })
+    f.at('2026-11-25T05:00:00.000Z')
+    expect((await f.reply()).status).toBe(201)
+    expect(await f.clock()).toMatchObject({ state: 'RUNNING', elapsedMs: 14_400_000n, dueAt: new Date('2026-11-27T10:00:00Z') })
+    expect(await f.ticket()).toMatchObject({ status: 'OPEN', waitingSince: null, closeDueAt: null })
+    expect(await f.event('WAIT_ENDED')).toMatchObject([{ actorId: customer.id, oldStatus: 'WAITING', newStatus: 'OPEN' }])
+  })
+
+  it('rejects unauthorized and repeated waits, keeps reminders and notes private and preserves multiple sub-minute waits', async () => {
+    const f = await setup()
+    expect((await f.act('wait', customer.email, { body: 'forbidden' })).status).toBe(403)
+    f.at('2026-11-23T04:00:00.123Z')
+    expect((await f.wait()).status).toBe(200)
+    const waiting = await f.ticket()
+    expect((await f.wait()).status).toBe(409)
+    expect((await f.act('customer-replies', other.email, { body: 'foreign' })).status).toBe(404)
+    expect((await f.act('internal-notes', agent.email, { body: 'PRIVATE lifecycle note' })).status).toBe(201)
+    expect((await f.act('public-replies', agent.email, { body: 'Reminder' })).status).toBe(201)
+    expect(await f.ticket()).toMatchObject({ waitingSince: waiting.waitingSince, closeDueAt: waiting.closeDueAt })
+    expect((await f.resolve()).status).toBe(409)
+    expect((await f.read('/' + f.id, customer.email)).text).not.toContain('PRIVATE lifecycle note')
+    f.at('2026-11-24T04:00:00.000Z')
+    expect((await f.reply()).status).toBe(201)
+    f.at('2026-11-24T04:00:00.456Z')
+    expect((await f.wait()).status).toBe(200)
+    expect(await f.clock()).toMatchObject({ state: 'PAUSED', elapsedMs: 579n })
+    expect(await f.event('WAIT_STARTED')).toHaveLength(2)
+  })
+
+  it('resumes one millisecond before closure and clears the old cutoff', async () => {
+    const f = await setup()
+    expect((await f.wait()).status).toBe(200)
+    f.at(new Date(+cutoff - 1))
+    expect((await f.reply()).status).toBe(201)
+    expect(await f.ticket()).toMatchObject({ status: 'OPEN', closeDueAt: null })
+    expect(await f.event('AUTO_CLOSED')).toHaveLength(0)
+  })
+
+  it('commits closure before rejecting a reply at the exact cutoff', async () => {
+    const f = await setup()
+    expect((await f.wait()).status).toBe(200)
+    f.at(cutoff)
+    const rejected = await f.reply()
+    expect(rejected.status).toBe(409)
+    expect(rejected.body.error.code).toBe('TICKET_CLOSED')
+    expect(await f.ticket()).toMatchObject({ status: 'CLOSED', closedAt: cutoff, closeProcessedAt: cutoff })
+    expect(await f.clock()).toMatchObject({ state: 'CANCELED', endedAt: cutoff, elapsedMs: 0n, completionOnTime: null })
+    expect(await f.event('AUTO_CLOSED')).toMatchObject([{ actorKind: 'SYSTEM', actorId: null, effectiveAt: cutoff }])
+    expect((await f.reopen()).body.error.code).toBe('TICKET_CLOSED')
+    expect(await runtime.ticketMessage.count({ where: { ticketId: f.id } })).toBe(1)
+  })
+
+  it.each([
+    ['2026-11-25T12:59:59.999Z', true],
+    ['2026-11-25T13:00:00.000Z', true],
+    ['2026-11-25T13:00:00.001Z', false],
+  ])('records manual resolution at %s with final deadline and exact outcome', async (time, onTime) => {
+    const f = await setup()
+    expect((await f.resolve()).body.error.code).toBe('FIRST_RESPONSE_REQUIRED')
+    f.at(time)
+    expect((await f.resolve('This fixes the problem.')).status).toBe(200)
+    const clock = await f.clock()
+    const due = new Date('2026-11-25T13:00:00.000Z')
+    expect(clock).toMatchObject({ state: 'COMPLETED', completedDueAt: due, completionOnTime: onTime,
+      firstBreachedAt: onTime ? null : due })
+    expect((await f.resolve()).status).toBe(409)
+    expect(await f.clock()).toEqual(clock)
+  })
+
+  it('serializes concurrent resolution and reopening while preserving both earlier clocks', async () => {
+    const f = await setup()
+    const results = await Promise.all([f.resolve('Fixed.'), f.resolve('Another resolution')])
+    expect(results.map((r) => r.status).sort()).toEqual([200, 409])
+    expect(await f.event('RESOLVED')).toHaveLength(1)
+    const old = await f.clock()
+    const originalResponse = await f.clock('RESPONSE')
+    f.at(new Date(+start + 168 * hours - 1))
+    const reopen = await Promise.all([f.reopen(), f.reopen()])
+    expect(reopen.map((r) => r.status).sort()).toEqual([200, 409])
+    expect(await f.clock()).toMatchObject({ cycle: 2, elapsedMs: 0n, state: 'RUNNING' })
+    expect(await runtime.slaClock.findUnique({ where: { id: old.id } })).toEqual(old)
+    expect(await f.clock('RESPONSE')).toEqual(originalResponse)
+    expect(await f.event('REOPENED')).toHaveLength(1)
+  })
+
+  it('rejects reopening at 168 hours without creating a second cycle', async () => {
+    const f = await setup()
+    expect((await f.resolve('Fixed.')).status).toBe(200)
+    f.at(new Date(+start + 168 * hours))
+    expect((await f.reopen()).body.error.code).toBe('REOPEN_EXPIRED')
+    expect(await f.clock()).toMatchObject({ cycle: 1, state: 'COMPLETED' })
+  })
+
+  it('keeps elapsed time and earlier breach on downgrade, then updates a paused budget without resetting waiting', async () => {
+    const f = await setup('URGENT')
+    f.at('2026-11-23T07:00:00Z')
+    expect((await f.act('priority', agent.email, { priority: 'LOW', reason: 'Lower impact' })).status).toBe(200)
+    expect(await f.clock('RESPONSE')).toMatchObject({ elapsedMs: 10_800_000n, budgetMs: 32_400_000n,
+      firstBreachedAt: new Date('2026-11-23T06:00:00Z') })
+    expect(await f.clock()).toMatchObject({ elapsedMs: 10_800_000n, originalBudgetMs: 32_400_000n, budgetMs: 162_000_000n })
+    expect((await f.wait()).status).toBe(200)
+    const waiting = await f.ticket()
+    f.at('2026-11-24T07:00:00Z')
+    expect((await f.act('priority', agent.email, { priority: 'MEDIUM', reason: 'More users affected' })).status).toBe(200)
+    expect(await f.clock()).toMatchObject({ state: 'PAUSED', elapsedMs: 10_800_000n, budgetMs: 97_200_000n, dueAt: null })
+    expect(await f.ticket()).toMatchObject({ waitingSince: waiting.waitingSince, closeDueAt: waiting.closeDueAt })
+    expect((await f.act('priority', agent.email, { priority: 'MEDIUM', reason: 'Same priority' })).body.error.code).toBe('PRIORITY_UNCHANGED')
+    expect(await f.event('PRIORITY_CHANGED')).toHaveLength(2)
+  })
+
+  it('serializes worker/late reply races and records cutoff and processing times independently', async () => {
+    const f = await setup()
+    expect((await f.wait()).status).toBe(200)
+    await reconcileDue(runtime, () => new Date(+cutoff - 1))
+    expect((await f.ticket()).status).toBe('WAITING')
+    const later = new Date('2026-11-30T04:01:00Z')
+    f.at(later)
+    const [reply] = await Promise.all([f.reply(), reconcileDue(runtime, () => later), reconcileDue(runtime, () => later)])
+    expect(reply.status).toBe(409)
+    expect(await f.ticket()).toMatchObject({ status: 'CLOSED', closedAt: cutoff, closeProcessedAt: later })
+    expect(await f.event('AUTO_CLOSED')).toMatchObject([{ effectiveAt: cutoff,
+      details: { cutoff: cutoff.toISOString(), processedAt: later.toISOString() } }])
+    await reconcileDue(runtime, () => later)
+    expect(await f.event('AUTO_CLOSED')).toHaveLength(1)
+  })
+
+  it('catches up due tickets before queue filtering and refuses unsafe legacy resume', async () => {
+    const f = await setup()
+    expect((await f.wait()).status).toBe(200)
+    f.at(cutoff)
+    const q = '&q=' + f.subject
+    expect((await f.read('?status=WAITING&limit=1' + q)).body.total).toBe(0)
+    const result = await f.read('?status=CLOSED&limit=1' + q)
+    expect(result.body.items).toMatchObject([{ status: 'CLOSED', sla: { resolution: { status: 'CANCELED' } } }])
+    const legacy = await message(waiting, 'customer-replies', customerCookie)
+    expect(legacy.body.error.code).toBe('SLA_HISTORY_UNAVAILABLE')
+  })
+
+  it('serializes an open reply against manual resolution and keeps the terminal clock immutable', async () => {
+    const f = await setup()
+    const [reply, resolution] = await Promise.all([f.reply(), f.resolve('Fixed.')])
+    expect(resolution.status).toBe(200)
+    expect([201, 409]).toContain(reply.status)
+    expect(await f.event('RESOLVED')).toHaveLength(1)
+    expect((await f.ticket()).status).toBe('RESOLVED')
+    expect((await f.clock()).state).toBe('COMPLETED')
+  })
+
+  it('serializes a public reply against waiting without changing the waiting origin', async () => {
+    const f = await setup()
+    const [waitingResult, publicReply] = await Promise.all([f.wait(), f.act('public-replies', agent.email, { body: 'Reply' })])
+    expect(waitingResult.status).toBe(200)
+    expect(publicReply.status).toBe(201)
+    expect(await f.ticket()).toMatchObject({ status: 'WAITING', waitingSince: start, closeDueAt: cutoff })
+    expect(await f.clock('RESPONSE')).toMatchObject({ state: 'COMPLETED', endedAt: start })
+    expect(await f.event('WAIT_STARTED')).toHaveLength(1)
+  })
+
+  it('serializes priority changes against resolution and first response', async () => {
+    const f = await setup()
+    f.at('2026-11-23T06:30:00Z')
+    const [priority, first] = await Promise.all([
+      f.act('priority', agent.email, { priority: 'URGENT', reason: 'Escalation' }),
+      f.act('public-replies', agent.email, { body: 'Acknowledged' }),
+    ])
+    expect(priority.status).toBe(200)
+    expect(first.status).toBe(201)
+    const response = await f.clock('RESPONSE')
+    expect(response).toMatchObject({ state: 'COMPLETED', endedAt: new Date('2026-11-23T06:30:00Z') })
+    const [changed, resolved] = await Promise.all([f.act('priority', agent.email, { priority: 'LOW', reason: 'Lower impact' }), f.resolve()])
+    expect(resolved.status).toBe(200)
+    expect([200, 409]).toContain(changed.status)
+    expect(await f.clock('RESPONSE')).toEqual(response)
+    expect(await f.event('RESOLVED')).toHaveLength(1)
+  })
+
+  it('prioritizes closure over a priority mutation at the cutoff', async () => {
+    const f = await setup()
+    expect((await f.wait()).status).toBe(200)
+    f.at(cutoff)
+    const [priority] = await Promise.all([
+      f.act('priority', agent.email, { priority: 'LOW', reason: 'Lower impact' }),
+      reconcileDue(runtime, () => cutoff),
+    ])
+    expect(priority.body.error.code).toBe('TICKET_CLOSED')
+    expect(await f.ticket()).toMatchObject({ status: 'CLOSED', priority: 'MEDIUM' })
+    expect(await f.event('PRIORITY_CHANGED')).toHaveLength(0)
+    expect(await f.event('AUTO_CLOSED')).toHaveLength(1)
+  })
+
+  it.each(['audit', 'clock'] as const)('rolls back waiting, the reply and all SLA changes when the %s write fails', async (failure) => {
+    const f = await setup()
+    await owner.ticket.update({ where: { id: f.id }, data: { subject: 'Phase five rollback ' + randomUUID() } })
+    const table = failure === 'audit' ? '"AuditEvent"' : '"SlaClock"'
+    const condition = failure === 'audit' ? "NEW.action = 'WAIT_STARTED'" : "NEW.state = 'PAUSED'"
+    const operation = failure === 'audit' ? 'INSERT' : 'UPDATE'
+    const ticket = await f.ticket()
+    const resolution = await f.clock()
+    const response = await f.clock('RESPONSE')
+    try {
+      await owner.$executeRawUnsafe(`CREATE FUNCTION phase_five_reject_write() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF ${condition} AND EXISTS (SELECT FROM "Ticket" WHERE id = NEW."ticketId" AND subject LIKE 'Phase five rollback %')
+        THEN RAISE EXCEPTION 'Simulated lifecycle write failure'; END IF; RETURN NEW; END; $$`)
+      await owner.$executeRawUnsafe(`CREATE TRIGGER phase_five_reject_write BEFORE ${operation} ON ${table}
+        FOR EACH ROW EXECUTE FUNCTION phase_five_reject_write()`)
+      expect((await f.wait()).status).toBe(500)
+      expect(await f.ticket()).toEqual(ticket)
+      expect(await f.clock()).toEqual(resolution)
+      expect(await f.clock('RESPONSE')).toEqual(response)
+      expect(await runtime.ticketMessage.count({ where: { ticketId: f.id } })).toBe(0)
+      expect(await runtime.auditEvent.count({ where: { ticketId: f.id } })).toBe(0)
+    } finally {
+      await owner.$executeRawUnsafe(`DROP TRIGGER IF EXISTS phase_five_reject_write ON ${table}`)
+      await owner.$executeRaw`DROP FUNCTION IF EXISTS phase_five_reject_write()`
+    }
+  })
+
+  it('reopens a legacy manual resolution without fabricating its unavailable previous cycle', async () => {
+    // Use the existing legacy fixture, which has no resolution clock.
+    const historical = new Date('2025-01-01T00:00:00.000Z')
+    const target = application(() => historical)
+    const cookie = cookieOf(await login(target, customer.email).expect(200))
+    await request(target).post('/api/tickets/' + resolved + '/reopen').set('Origin', origin).set('Cookie', cookie)
+      .send({ body: 'Reopening legacy issue' }).expect(200)
+    expect(await runtime.slaClock.findMany({ where: { ticketId: resolved } })).toMatchObject([{ kind: 'RESOLUTION', cycle: 2,
+      startedAt: historical, elapsedMs: 0n }])
+    expect(await runtime.auditEvent.findFirst({ where: { ticketId: resolved, action: 'REOPENED' } })).toMatchObject({
+      details: { previousCycle: null },
+    })
+  })
+
+  it('starts runtime reconciliation through the actual server entry point after downtime', async () => {
+    // These fixed dates are in the past even if the tests are run years later.
+    const createdAt = new Date('1971-01-04T04:00:00.000Z')
+    const dueAt = new Date('1971-01-08T13:00:00.000Z')
+    const stale = await runtime.$transaction(async (tx) => {
+      const ticket = await tx.ticket.create({ data: {
+        customerId: customer.id, assigneeId: agent.id, calendarId, priority: 'MEDIUM',
+        subject: 'Startup ' + randomUUID(), description: 'Startup fixture', createdAt,
+        status: 'WAITING', waitingSince: createdAt, closeDueAt: dueAt,
+      } })
+      const clock = startClock('RESOLUTION', 'MEDIUM', createdAt, businessCalendar())
+      await tx.slaClock.create({ data: { ticketId: ticket.id, ...pauseResolution(clock, createdAt, businessCalendar()) } })
+      return ticket
+    })
+    const socket = createServer()
+    await new Promise<void>((resolve) => socket.listen(0, '127.0.0.1', resolve))
+    const address = socket.address()
+    if (!address || typeof address === 'string') throw new Error('Test port unavailable.')
+    await new Promise<void>((resolve) => socket.close(() => resolve()))
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: 'test', PORT: String(address.port), DATABASE_URL: process.env.TEST_DATABASE_URL,
+      LIFECYCLE_INTERVAL_SECONDS: '60' }
+    delete env.MIGRATION_DATABASE_URL
+    delete env.TEST_MIGRATION_DATABASE_URL
+    delete env.DEV_SEED_PASSWORD
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../dist/index.js', import.meta.url))], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })
+    const done = once(child, 'exit')
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Startup reconciliation timed out.')), 9000)
+        child.once('error', () => { clearTimeout(timer); reject(new Error('Startup process failed.')) })
+        child.once('exit', () => { clearTimeout(timer); reject(new Error('Startup process exited early.')) })
+        child.stdout.on('data', (chunk: Buffer) => {
+          if (chunk.toString().includes('Lifecycle reconciliation closed')) {
+            clearTimeout(timer)
+            resolve()
+          }
+        })
+      })
+      expect(await runtime.ticket.findUnique({ where: { id: stale.id } })).toMatchObject({
+        status: 'CLOSED', closedAt: dueAt, closeProcessedAt: expect.any(Date),
+      })
+      const events = await runtime.auditEvent.findMany({ where: { ticketId: stale.id, action: 'AUTO_CLOSED' } })
+      expect(events).toHaveLength(1)
+      expect(events[0].effectiveAt).toEqual(dueAt)
+      expect(events[0].recordedAt.getTime()).toBeGreaterThan(+dueAt)
+    } finally {
+      child.kill()
+      await done
+    }
+  }, 13_000)
+
+  it('batches closure work with a caller-supplied bound', async () => {
+    const begin = new Date('1970-01-05T04:00:00.000Z')
+    const due = new Date('1970-01-09T13:00:00.000Z')
+    const fixtures = []
+    for (let i = 0; i < 2; i++) {
+      fixtures.push(await runtime.ticket.create({ data: {
+        customerId: customer.id, assigneeId: agent.id, calendarId, priority: 'MEDIUM',
+        subject: 'Bounded ' + randomUUID(), description: 'Bounded closure fixture', createdAt: begin,
+        status: 'WAITING', waitingSince: begin, closeDueAt: due,
+      } }))
+    }
+    expect((await reconcileDue(runtime, () => due, 1)).closed).toBe(1)
+    expect(await runtime.ticket.count({ where: { id: { in: fixtures.map((f) => f.id) }, status: 'WAITING' } })).toBe(1)
+    expect((await reconcileDue(runtime, () => due, 1)).closed).toBe(1)
+    expect((await reconcileDue(runtime, () => due, 1)).closed).toBe(0)
+    expect(await runtime.auditEvent.count({ where: { ticketId: { in: fixtures.map((f) => f.id) }, action: 'AUTO_CLOSED' } })).toBe(2)
   })
 })

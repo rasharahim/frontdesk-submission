@@ -3,6 +3,8 @@ import { Priority, TicketStatus } from '../generated/prisma/client.js'
 
 export const idSchema = z.uuid()
 const body = z.string().trim().min(1).max(4000)
+export const resolveInput = z.strictObject({ body: body.optional() })
+export const priorityInput = z.strictObject({ priority: z.enum(Priority), reason: z.string().trim().min(1).max(500) })
 export const messageInput = z.strictObject({ body })
 export const createInput = z.strictObject({
   subject: z.string().trim().min(1).max(160),

@@ -2,29 +2,32 @@ import { Prisma, type PrismaClient, type TicketStatus } from '../generated/prism
 import type { Actor } from '../auth/session.js'
 import { HttpError } from '../http/errors.js'
 import { idSchema, type CreateInput, type QueueInput } from './input.js'
-import { calendarSelect, finishFirstResponse, initializeClocks, loadStaffSla, overdueWhere, reconstructClocks } from '../sla/persistence.js'
+import { calendarSelect, initializeClocks, loadStaffSla, overdueWhere } from '../sla/persistence.js'
+
+import { messageFields as message, ticketLifecycle } from './lifecycle.js'
+import { batchSize, reconcileTicket, ticketNotFound } from './reconciliation.js'
 
 const summary = { id: true, reference: true, subject: true, status: true, priority: true, createdAt: true } as const
 const staffSummary = { ...summary, updatedAt: true,
   assignee: { select: { id: true, displayName: true } },
-  waitingSince: true, closeDueAt: true } as const
+  waitingSince: true, closeDueAt: true, resolvedAt: true, closedAt: true, closeProcessedAt: true } as const
 const detail = { description: true, resolvedAt: true, closedAt: true } as const
-const author = { select: { displayName: true } } as const
-const message = { id: true, body: true, kind: true, createdAt: true, author } as const
 const messageOrder: Prisma.TicketMessageOrderByWithRelationInput[] = [{ createdAt: 'asc' }, { id: 'asc' }]
 const ticketOrder: Prisma.TicketOrderByWithRelationInput[] = [{ createdAt: 'desc' }, { id: 'desc' }]
-const missingTicket = () => new HttpError(404, 'TICKET_NOT_FOUND', 'Ticket not found.')
 const publicKinds = ['CUSTOMER_PUBLIC', 'AGENT_PUBLIC'] as const
 
 export function ticketService(db: PrismaClient, now: () => Date) {
+  const lifecycle = ticketLifecycle(db, now)
+
   async function create(actor: Actor, input: CreateInput) {
+    if (input.sourceTicketId) await reconcileTicket(db, input.sourceTicketId, now, actor.id)
     return db.$transaction(async (tx) => {
       if (input.sourceTicketId) {
         const source = await tx.ticket.findFirst({
           where: { id: input.sourceTicketId, customerId: actor.id, status: { in: ['CLOSED', 'RESOLVED'] } },
           select: { id: true },
         })
-        if (!source) throw missingTicket()
+        if (!source) throw ticketNotFound()
       }
       const calendar = await tx.holidayCalendar.findFirst({
         where: { publishedAt: { not: null } }, orderBy: { version: 'desc' }, select: { id: true, ...calendarSelect },
@@ -69,11 +72,20 @@ export function ticketService(db: PrismaClient, now: () => Date) {
         ...(exactId.success ? [{ id: exactId.data }] : []),
         ...(/^FD-[1-9][0-9]*$/i.test(q) ? [{ reference: q.toUpperCase() }] : [])] : undefined,
     }
+    const due: Prisma.TicketWhereInput = { ...base, status: 'WAITING', closeDueAt: { lte: asOf } }
+    const candidates = await db.ticket.findMany({ where: due, orderBy: [{ closeDueAt: 'asc' }, { id: 'asc' }],
+      take: batchSize, select: { id: true } })
+    for (const candidate of candidates) {
+      await reconcileTicket(db, candidate.id, now, staff ? undefined : actor.id)
+    }
     const slaFilter = query.sla === 'overdue' ? overdue : query.sla === 'historical'
       ? { clocks: { some: { firstBreachedAt: { not: null } } } } : {}
     const where = { ...base, status: query.status, ...slaFilter }
     const paging = { where, orderBy: ticketOrder, skip: (query.page - 1) * query.limit, take: query.limit }
     return db.$transaction(async (tx) => {
+      if (await tx.ticket.findFirst({ where: due, select: { id: true } })) {
+        throw new HttpError(503, 'LIFECYCLE_CATCH_UP', 'Ticket closure catch-up is still in progress. Retry shortly.')
+      }
       const total = await tx.ticket.count({ where })
       const metadata = { page: query.page, limit: query.limit, total }
       if (!staff) return { ...metadata, items: await tx.ticket.findMany({ ...paging, select: summary }) }
@@ -89,6 +101,11 @@ export function ticketService(db: PrismaClient, now: () => Date) {
   }
 
   async function get(actor: Actor, id: string) {
+    const customerId = actor.role === 'CUSTOMER' ? actor.id : undefined
+    const due = await db.ticket.findFirst({
+      where: { id, customerId, status: 'WAITING', closeDueAt: { lte: now() } }, select: { id: true },
+    })
+    if (due) await reconcileTicket(db, id, now, customerId)
     if (actor.role === 'CUSTOMER') {
       const ticket = await db.ticket.findFirst({
         where: { id, customerId: actor.id },
@@ -96,7 +113,7 @@ export function ticketService(db: PrismaClient, now: () => Date) {
           where: { kind: { in: [...publicKinds] } }, select: message, orderBy: messageOrder,
         } },
       })
-      if (!ticket) throw missingTicket()
+      if (!ticket) throw ticketNotFound()
       return ticket
     }
     const asOf = now()
@@ -104,7 +121,7 @@ export function ticketService(db: PrismaClient, now: () => Date) {
       const ticket = await tx.ticket.findUnique({
         where: { id }, select: { ...staffSummary, ...detail, calendarId: true },
       })
-      if (!ticket) throw missingTicket()
+      if (!ticket) throw ticketNotFound()
       const messages = await tx.ticketMessage.findMany({ where: { ticketId: id }, select: message, orderBy: messageOrder })
       const sla = await loadStaffSla(tx, [ticket], asOf, true)
       const { calendarId: _calendarId, ...fields } = ticket
@@ -112,40 +129,5 @@ export function ticketService(db: PrismaClient, now: () => Date) {
     }, { isolationLevel: 'RepeatableRead' })
   }
 
-  async function writeMessage(actor: Actor, id: string, body: string, internal: boolean) {
-    const customer = actor.role === 'CUSTOMER'
-    if (customer && internal) throw new HttpError(403, 'FORBIDDEN', 'Permission denied.')
-    return db.$transaction(async (tx) => {
-      const scope = customer ? Prisma.sql`AND "customerId" = ${actor.id}::uuid` : Prisma.empty
-      const [ticket] = await tx.$queryRaw<{ status: TicketStatus; assigneeId: string | null; closeDueAt: Date | null }[]>`
-        SELECT status, "assigneeId", "closeDueAt" FROM "Ticket" WHERE id = ${id}::uuid ${scope} FOR UPDATE
-      `
-      if (!ticket) throw missingTicket()
-      if (!customer && ticket.assigneeId !== actor.id) throw new HttpError(403, 'FORBIDDEN', 'Permission denied.')
-      const timestamp = now()
-      if (ticket.status !== 'OPEN' && (ticket.status !== 'WAITING' || customer ||
-          (ticket.closeDueAt && ticket.closeDueAt <= timestamp))) {
-        throw new HttpError(409, 'TICKET_STATE_CONFLICT', 'This ticket cannot accept that action in its current state.')
-      }
-      if (!customer && !internal && !await tx.slaClock.findUnique({
-        where: { ticketId_kind_cycle: { ticketId: id, kind: 'RESPONSE', cycle: 1 } }, select: { id: true },
-      })) await reconstructClocks(tx, id)
-      // Phase 5 will resume a waiting ticket on a timely CUSTOMER_PUBLIC reply here.
-      const created = await tx.ticketMessage.create({
-        data: { ticketId: id, authorId: actor.id, body, createdAt: timestamp,
-          kind: internal ? 'INTERNAL' : customer ? 'CUSTOMER_PUBLIC' : 'AGENT_PUBLIC' },
-        select: message,
-      })
-      const firstResponse = !internal && !customer ? await finishFirstResponse(tx, id, timestamp, created.id) : undefined
-      if (!internal) await tx.ticket.update({ where: { id }, data: { updatedAt: timestamp }, select: { id: true } })
-      await tx.auditEvent.create({
-        data: { ticketId: id, actorId: actor.id, actorKind: 'USER',
-          action: internal ? 'PRIVATE_NOTE' : customer ? 'CUSTOMER_REPLY' : 'PUBLIC_REPLY',
-          effectiveAt: timestamp, details: { messageId: created.id, ...(firstResponse ? { firstResponse } : {}) } },
-        select: { id: true },
-      })
-      return created
-    })
-  }
-  return { create, list, get, writeMessage }
+  return { create, list, get, mutate: lifecycle.mutate }
 }

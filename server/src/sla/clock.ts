@@ -49,7 +49,7 @@ function consumed(clock: Clock, now: Date, calendar: Calendar) {
   return clock.elapsedMs + BigInt(segment)
 }
 
-function missedDeadline(clock: Clock, now: Date) {
+export function missedDeadline(clock: Clock, now: Date) {
   const due = clock.dueAt
   return clock.state === 'RUNNING' && due &&
     (now > due || (now >= due && clock.elapsedMs > clock.budgetMs)) ? due : null

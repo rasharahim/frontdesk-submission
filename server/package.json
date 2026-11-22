@@ -4,15 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "npm run build && concurrently --kill-others --names types,api \"tsc -p tsconfig.build.json --watch --preserveWatchOutput\" \"node --watch dist/index.js\"",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run test/app.test.ts test/sla.test.ts",
-    "test:db": "vitest run test/db.test.ts test/api.db.test.ts test/sla-repair.db.test.ts --no-file-parallelism",
-    "seed": "tsx prisma/seed.ts",
-    "sla:backfill": "tsx prisma/backfill-sla.ts",
-    "sla:repair": "tsx prisma/repair-sla.ts"
+    "test": "vitest run test/app.test.ts test/sla.test.ts test/lifecycle.test.ts",
+    "test:db": "npm run build && vitest run test/db.test.ts test/api.db.test.ts test/sla-repair.db.test.ts --no-file-parallelism",
+    "build:maintenance": "tsc -p tsconfig.maintenance.json",
+    "seed": "npm run build:maintenance && node .tmp/maintenance/prisma/seed.js",
+    "sla:backfill": "npm run build:maintenance && node .tmp/maintenance/prisma/backfill-sla.js",
+    "sla:repair": "npm run build:maintenance && node .tmp/maintenance/prisma/repair-sla.js",
+    "lifecycle:demo": "npm run build:maintenance && node .tmp/maintenance/prisma/lifecycle-demo.js"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",
